@@ -1,0 +1,18 @@
+repo_name: blugnu/kafka
+report_id: '09779d912f6f6d8681e8e5a8723bc872'
+repo_type: Public
+timestamp: '2023-11-10T03:38:48+00:00'
+requested_by: deltics
+provider: github
+branch: master
+detected_tools_count: 1
+tools:
+- name: Git
+  description: Fast, scalable, distributed revision control system
+  website_url: http://git-scm.com/
+  open_source: true
+  hosted_saas: false
+  category: Build, Test, Deploy
+  sub_category: Version Control System
+  image_url: https://img.stackshare.io/service/1046/git.png
+  detection_source: Repo Metadata
