@@ -1,0 +1,6 @@
+{
+    "sonarlint.connectedMode.project": {
+        "connectionId": "blugnu",
+        "projectKey": "blugnu:kafka"
+    }
+}
