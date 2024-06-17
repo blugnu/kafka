@@ -3,7 +3,6 @@ package kafka
 import (
 	"context"
 	"errors"
-	"reflect"
 	"testing"
 	"time"
 
@@ -68,16 +67,11 @@ func TestConsumerOptions(t *testing.T) {
 						con := &consumer{}
 
 						// ACT
-						if err := tc.sut(cfg, con); err != nil {
-							t.Fatalf("unexpected error: %v", err)
-						}
+						err := tc.sut(cfg, con)
 
 						// ASSERT
-						wanted := tc.result
-						got := result{Config: cfg, consumer: con}
-						if !reflect.DeepEqual(wanted, got) {
-							t.Errorf("\nwanted %#v\ngot    %#v", wanted, got)
-						}
+						test.That(t, err).IsNil()
+						test.That(t, result{Config: cfg, consumer: con}).Equals(tc.result)
 					})
 				}
 			},
@@ -128,23 +122,6 @@ func TestConsumerConfigurationErrorHandling(t *testing.T) {
 	}
 }
 
-// func TestHandlerConfigurationRequiresHandlerFunction(t *testing.T) {
-// 	// ARRANGE
-// 	cfg := &Config{}
-// 	con := &consumer{
-// 		handlers: map[string]*handler{},
-// 	}
-
-// 	// ACT
-// 	got := TopicHandlers(map[string]Handler{"test": })(cfg, con)
-
-// 	// ASSERT
-// 	wanted := ErrHandlerFunctionIsRequired
-// 	if !errors.Is(got, wanted) {
-// 		t.Errorf("\nwanted %#v\ngot    %#v", wanted, got)
-// 	}
-// }
-
 func TestHandlerConfigurationAppliesDefaults(t *testing.T) {
 	// ARRANGE
 	cfg := &Config{}
@@ -162,31 +139,3 @@ func TestHandlerConfigurationAppliesDefaults(t *testing.T) {
 	// ASSERT
 	test.That(t, con.handlers["test"]).IsNotNil()
 }
-
-// func TestHandlerConfigurationAddsHandlerForRetryTopics(t *testing.T) {
-// 	// ARRANGE
-// 	cfg := &Config{}
-// 	con := &consumer{
-// 		handlers: map[string]*handler{},
-// 	}
-
-// 	// ACT
-// 	err := TopicHandlers(map[string]Handler{
-// 		"test": {
-// 			HandlerFunc: func(context.Context, *kafka.Message) error { return nil },
-// 			OnError: &Retry[string]{
-// 				Topic: "retry",
-// 			},
-// 		},
-// 	})(cfg, con)
-// 	if err != nil {
-// 		t.Fatalf("unexpected error: %v", err)
-// 	}
-
-// 	// ASSERT
-// 	wanted := con.handlers["test"]
-// 	got := con.handlers["retry"]
-// 	if !reflect.DeepEqual(wanted, got) {
-// 		t.Errorf("\nwanted %#v\ngot    %#v", wanted, got)
-// 	}
-// }

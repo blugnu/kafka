@@ -664,10 +664,82 @@ func TestConsumerStoppedChannelIsSignalledWhenConsumerHasStopped(t *testing.T) {
 	}
 }
 
+func TestConsumer_IsRunning_NilConsumer(t *testing.T) {
+	// ARRANGE
+	var sut *consumer
+
+	// ACT
+	err := sut.IsRunning()
+
+	// ASSERT
+	test.Error(t, err).Is(ErrInvalidOperation)
+}
+
+func TestConsumer_IsRunning_NotStarted(t *testing.T) {
+	// ARRANGE
+	sut := &consumer{}
+
+	// ACT
+	err := sut.IsRunning()
+
+	// ASSERT
+	test.Error(t, err).Is(ErrConsumerNotRunning)
+}
+
+func TestConsumer_IsRunning_ConsumerError(t *testing.T) {
+	// ARRANGE
+	sut := &consumer{err: errors.New("consumer error")}
+
+	// ACT
+	err := sut.IsRunning()
+
+	// ASSERT
+	test.Error(t, err).Is(sut.err)
+}
+
+func TestConsumer_IsRunning_Running(t *testing.T) {
+	// ARRANGE
+	sut := &consumer{state: csRunning}
+
+	// ACT
+	err := sut.IsRunning()
+
+	// ASSERT
+	test.That(t, err).IsNil()
+}
+
+func TestConsumer_Start_ConsumerNotReady(t *testing.T) {
+	// ARRANGE
+	ctx := context.Background()
+	sut := &consumer{}
+
+	// ACT
+	err := sut.Start(ctx)
+
+	// ASSERT
+	test.Error(t, err).Is(ErrInvalidOperation)
+}
+
+func TestConsumer_Start_NoConfiguredHandlers(t *testing.T) {
+	// ARRANGE
+	ctx := context.Background()
+	sut := &consumer{
+		state:    csReady,
+		handlers: map[string]Handler{},
+	}
+
+	// ACT
+	err := sut.Start(ctx)
+
+	// ASSERT
+	test.Error(t, err).Is(ErrNoHandlersConfigured)
+}
+
 func TestConsumer_Start_SubscribesToTopics(t *testing.T) {
 	// ARRANGE
 	ctx := context.Background()
 	sut := &consumer{
+		state: csReady,
 		handlers: map[string]Handler{
 			"topic.1": HandlerFunc(nil),
 			"topic.2": HandlerFunc(nil),
@@ -684,31 +756,21 @@ func TestConsumer_Start_SubscribesToTopics(t *testing.T) {
 	err := sut.Start(ctx)
 
 	// ASSERT
-	t.Run("topics", func(t *testing.T) {
-		wanted := []string{"topic.1", "topic.2"}
-		got := subscribed
-		slices.Sort(wanted)
-		slices.Sort(got)
-		if !slices.Equal(wanted, got) {
-			t.Errorf("\nwanted %#v\ngot    %#v", wanted, got)
-		}
-	})
 
-	t.Run("error", func(t *testing.T) {
-		wanted := suberr
-		got := err
-		if !errors.Is(got, wanted) {
-			t.Errorf("\nwanted %#v\ngot    %#v", wanted, got)
-		}
-	})
+	test.Error(t, err).Is(suberr)
+
+	slices.Sort(subscribed)
+	test.Slice(t, subscribed).Equals([]string{"topic.1", "topic.2"})
 }
 
 func TestConsumer_Start_StartsTheRunLoop(t *testing.T) {
 	// ARRANGE
 	ctx := context.Background()
 	sut := &consumer{
-		sig:     make(chan os.Signal, 1),
-		stopped: make(chan error, 1),
+		state:    csReady,
+		handlers: map[string]Handler{"topic.1": HandlerFunc(nil)},
+		sig:      make(chan os.Signal, 1),
+		stopped:  make(chan error, 1),
 	}
 	signal.Notify(sut.sig, os.Interrupt)
 
@@ -743,6 +805,56 @@ func TestConsumer_Start_StartsTheRunLoop(t *testing.T) {
 	if wanted != got {
 		t.Errorf("\nwanted %#v\ngot    %#v", wanted, got)
 	}
+}
+
+func TestConsumer_Stop_NilConsumer(t *testing.T) {
+	// ARRANGE
+	var sut *consumer
+
+	// ACT
+	err := sut.Stop()
+
+	// ASSERT
+	test.Error(t, err).Is(ErrInvalidOperation)
+}
+
+func TestConsumer_Stop_NotStarted(t *testing.T) {
+	// ARRANGE
+	sut := &consumer{}
+
+	// ACT
+	err := sut.Stop()
+
+	// ASSERT
+	test.Error(t, err).Is(ErrConsumerNotStarted)
+}
+
+func TestConsumer_Stop_ConsumerRunning(t *testing.T) {
+	// ARRANGE
+	sut := &consumer{
+		state: csRunning,
+		sig:   make(chan os.Signal, 1),
+	}
+
+	// ACT
+	err := sut.Stop()
+
+	// ASSERT
+	test.That(t, err).IsNil()
+}
+
+func TestConsumer_Stop_ConsumerError(t *testing.T) {
+	// ARRANGE
+	sut := &consumer{
+		state: csStopped,
+		err:   errors.New("consumer error"),
+	}
+
+	// ACT
+	err := sut.Stop()
+
+	// ASSERT
+	test.That(t, err).IsNil()
 }
 
 func TestNewConsumerClonesTheBaseConfig(t *testing.T) {
@@ -956,15 +1068,73 @@ func TestConsumerLogsChannelGoRoutineTerminatesWhenChannelIsClosed(t *testing.T)
 
 func TestConsumerWait(t *testing.T) {
 	// ARRANGE
-	conerr := errors.New("error")
-	sut := &consumer{
-		stopped: make(chan error, 1),
+	testcases := []struct {
+		scenario string
+		exec     func(t *testing.T)
+	}{
+		{scenario: "consumer stopped with error",
+			exec: func(t *testing.T) {
+				// ARRANGE
+				conerr := errors.New("error")
+				sut := &consumer{
+					state:   csRunning,
+					stopped: make(chan error, 1),
+				}
+				sut.stopped <- conerr
+
+				// ACT
+				err := sut.Wait()
+
+				// ASSERT
+				test.Error(t, err).Is(conerr)
+			},
+		},
+		{scenario: "consumer is nil",
+			exec: func(t *testing.T) {
+				// ARRANGE
+				sut := (*consumer)(nil)
+
+				// ACT
+				err := sut.Wait()
+
+				// ASSERT
+				test.That(t, err).IsNil()
+			},
+		},
+		{scenario: "consumer not started",
+			exec: func(t *testing.T) {
+				// ARRANGE
+				sut := &consumer{}
+
+				// ACT
+				err := sut.Wait()
+
+				// ASSERT
+				test.Error(t, err).Is(ErrConsumerNotStarted)
+			},
+		},
+		{scenario: "multiple Wait() calls",
+			exec: func(t *testing.T) {
+				// ARRANGE
+				sut := &consumer{
+					state:   csStopped,
+					stopped: make(chan error, 1),
+				}
+				sut.stopped <- nil
+
+				// ACT
+				err := sut.Wait()
+				err2 := sut.Wait()
+
+				// ASSERT
+				test.That(t, err).IsNil()
+				test.Error(t, err2).Is(ErrInvalidOperation)
+			},
+		},
 	}
-	sut.stopped <- conerr
-
-	// ACT
-	err := sut.Wait()
-
-	// ASSERT
-	test.Error(t, err).Is(conerr)
+	for _, tc := range testcases {
+		t.Run(tc.scenario, func(t *testing.T) {
+			tc.exec(t)
+		})
+	}
 }

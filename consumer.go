@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -18,11 +19,13 @@ var (
 )
 
 type Consumer interface {
+	IsRunning() error
 	Start(context.Context) error
 	Wait() error
 }
 
 type consumer struct {
+	sync.Mutex
 	groupId     string
 	handlers    map[string]Handler
 	readTimeout time.Duration
@@ -30,6 +33,8 @@ type consumer struct {
 	sig         chan os.Signal
 	logsChannel chan kafka.LogEvent
 	stopped     chan error
+	waiting     int
+	err         error
 	*kafka.Consumer
 	cypher
 	funcs struct {
@@ -141,6 +146,13 @@ func (c *consumer) consume(ctx context.Context) error {
 	return err
 }
 
+// setState sets the state of the consumer.
+func (c *consumer) setState(state consumerState) {
+	c.Lock()
+	defer c.Unlock()
+	c.state = state
+}
+
 // handleMessage identifies the handler for a specified message, decrypts
 // the message and calls the handler function.
 func (c *consumer) handleMessage(ctx context.Context, msg *kafka.Message) error {
@@ -181,39 +193,36 @@ func (c *consumer) run(ctx context.Context) {
 		c.cleanup(ctx, err, recover())
 	}()
 
-	c.state = csRunning
-
-	exitInfo := LogInfo{
+	exitLog := logs.Info // upgraded to logs.Error if an error occurs
+	logInfo := LogInfo{
 		Consumer: &c.groupId,
 	}
-	exitLog := logs.Info // upgraded to logs.Error if an error occurs
-
-	logs.Info(ctx, "waiting for messages", exitInfo)
+	c.setState(csRunning)
+	logs.Info(ctx, "waiting for messages", logInfo)
 
 runLoop:
 	for {
 		select {
 		case <-ctx.Done():
-			exitInfo.Reason = addr("context done")
+			logInfo.Reason = addr("context done")
 			break runLoop
 
 		case <-c.sig:
-			exitInfo.Reason = addr("signal")
+			logInfo.Reason = addr("signal")
 			break runLoop
 
 		default:
 			if err = c.consume(ctx); err == nil {
 				continue
 			}
-			exitInfo.Reason = addr("error")
-			exitInfo.Error = err
+			logInfo.Reason = addr("error")
+			logInfo.Error = err
 			exitLog = logs.Error
 			break runLoop
 		}
 	}
-	exitLog(ctx, "consumer stopping", exitInfo)
-
-	c.state = csStopping
+	exitLog(ctx, "consumer stopping", logInfo)
+	c.setState(csStopping)
 }
 
 // cleanup performs the necessary cleanup operations when the consumer
@@ -226,6 +235,9 @@ runLoop:
 // The function will never be called with BOTH a non-nil error AND a
 // recovered panic value.
 func (c *consumer) cleanup(ctx context.Context, err error, recovered any) {
+	c.Lock()
+	defer c.Unlock()
+
 	c.state = map[bool]consumerState{
 		true:  csPanic,
 		false: csStopped,
@@ -246,7 +258,11 @@ func (c *consumer) cleanup(ctx context.Context, err error, recovered any) {
 		})
 	}
 
-	// send the error to the stopped channel so it may be collected by any
+	// if the consumer was stopped due to an error (or panic), set the error
+	// on the consumer so it may be retrieved by the IsRunning() method
+	c.err = err
+
+	// also send the error to the stopped channel so it may be collected by any
 	// goroutine that may be waiting for the consumer
 	c.stopped <- err
 
@@ -258,14 +274,22 @@ func (c *consumer) cleanup(ctx context.Context, err error, recovered any) {
 	})
 }
 
-// Wait blocks until the consumer run loop has stopped.  A consumer
-// may be stopped as a result of a message handler panicking or returning
-// a kafka.FatalError or in response to a SIGINT or SIGTERM signal.
-func (c *consumer) Wait() error {
-	return <-c.stopped
-}
+// subscribe subscribes the consumer to the topics for which handlers have
+// been registered.
+//
+// If no handlers have been registered, the consumer will return ErrNoHandlersConfigured.
+func (c *consumer) subscribe(ctx context.Context) error {
+	c.Lock()
+	defer c.Unlock()
 
-func (c *consumer) Start(ctx context.Context) error {
+	if c.state != csReady {
+		return fmt.Errorf("start: %w: current state: %s", ErrInvalidOperation, c.state)
+	}
+
+	if len(c.handlers) == 0 {
+		return fmt.Errorf("start: %w", ErrNoHandlersConfigured)
+	}
+
 	topics := []string{}
 	for t := range c.handlers {
 		topics = append(topics, t)
@@ -277,10 +301,114 @@ func (c *consumer) Start(ctx context.Context) error {
 	})
 
 	if err := c.funcs.subscribe(topics, nil); err != nil {
-		return fmt.Errorf("subscribe: %w", err)
+		c.err = err
+		c.state = csError
+		return fmt.Errorf("start: subscribe: %w", err)
 	}
 
 	c.state = csSubscribed
+	return nil
+}
+
+// Wait blocks until the consumer run loop has stopped.  A consumer
+// may be stopped in response to a SIGINT or SIGTERM signal or as a result of a
+// message handler panicking or returning a kafka.FatalError.
+//
+// There must be only one call to Wait for any consumer, intended to be called
+// by the goroutine that Start()s the consumer.  The first call to Wait will
+// return the error that caused the consumer to stop; any subsequent calls will
+// return ErrInvalidOperation.
+//
+// Wait returns nil immediately if the consumer is nil.
+//
+// If Wait is called on a consumer that has not been started, ErrConsumerNotStarted
+// is returned.
+func (c *consumer) Wait() error {
+	if c == nil {
+		return nil
+	}
+	return func() error {
+		c.Lock()
+		defer c.Unlock()
+
+		if c.waiting++; c.waiting > 1 {
+			return fmt.Errorf("%w: there must be at most ONE Wait() call for a consumer", ErrInvalidOperation)
+		}
+		if c.state < csSubscribed {
+			return ErrConsumerNotStarted
+		}
+		return <-c.stopped
+	}()
+}
+
+// IsRunning returns an error if the consumer is not running.
+//
+// If the consumer is not running, the error will be one of:
+//
+//   - ErrInvalidOperation: the consumer is nil;
+//
+//   - ErrConsumerNotRunning: the consumer has not been started or has
+//     stopped. The error will include the current state of the consumer;
+//
+//   - ErrConsumerError: the consumer has stopped due to an error.
+func (c *consumer) IsRunning() error {
+	if c == nil {
+		return fmt.Errorf("%w: consumer is nil", ErrInvalidOperation)
+	}
+
+	c.Lock()
+	defer c.Unlock()
+
+	if c.state != csRunning {
+		if c.err != nil {
+			return fmt.Errorf("%w: %w", ErrConsumerError, c.err)
+		}
+		return fmt.Errorf("%w: current state: %s", ErrConsumerNotRunning, c.state)
+	}
+	return nil
+}
+
+// Stop stops the consumer, if running.  The consumer will stop processing messages and
+// will return immediately.
+//
+// If the consumer has already stopped Stop returns nil immediately.
+//
+// If the consumer has not been started, Stop will immediately return ErrConsumerNotStarted.
+func (c *consumer) Stop() error {
+	if c == nil {
+		return fmt.Errorf("%w: consumer is nil", ErrInvalidOperation)
+	}
+
+	c.Lock()
+	defer c.Unlock()
+
+	if c.state > csRunning {
+		return nil
+	}
+	if c.state < csRunning {
+		return fmt.Errorf("stop: %w: current state: %s", ErrConsumerNotStarted, c.state)
+	}
+
+	c.sig <- syscall.SIGINT
+	return nil
+}
+
+// Start starts the consumer.  The consumer must be started before it can
+// receive messages.
+//
+// If the consumer is already running, Start will return immediately with
+// ErrInvalidOperation.
+//
+// Starting the consumer will subscribe to the topics for which handlers have
+// been registered.  If no handlers have been registered, the consumer will
+// return ErrNoHandlersConfigured.
+//
+// If the consumer is unable to subscribe to the topics, the error from the
+// subscription request will be returned.
+func (c *consumer) Start(ctx context.Context) error {
+	if err := c.subscribe(ctx); err != nil {
+		return err
+	}
 
 	go c.run(ctx)
 	return nil
@@ -365,7 +493,7 @@ func NewConsumer(config *Config, opts ...ConsumerOption) (Consumer, error) {
 	signal.Notify(consumer.sig, syscall.SIGINT, syscall.SIGTERM)
 
 	consumer.stopped = make(chan error, 1)
-	consumer.state = csReady
+	consumer.state = csReady // no need to protect this access to state since at this point there is no other ref to the consumer
 
 	return consumer, nil
 }

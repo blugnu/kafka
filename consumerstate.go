@@ -11,6 +11,7 @@ const (
 	csRunning
 	csStopping
 	csStopped
+	csError
 	csPanic
 )
 
@@ -22,6 +23,7 @@ func (cs consumerState) String() string {
 		csRunning:      "csRunning",
 		csStopping:     "csStopping",
 		csStopped:      "csStopped",
+		csError:        "csError",
 		csPanic:        "csPanic",
 	}[cs]
 	if !ok {

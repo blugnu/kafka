@@ -8,12 +8,16 @@ import (
 )
 
 var (
-	ErrHandlerFunctionIsRequired = errors.New("handler function is required")
-	ErrInvalidReadTimeout        = errors.New("invalid read timeout (must be -1 or >= 0)")
-	ErrNoHandler                 = errors.New("no handler")
-	ErrReprocessMessage          = errors.New("message will be reprocessed")
-	ErrRetryLimitReached         = errors.New("retry limit reached")
-	ErrTimeout                   = errors.New("time out")
+	ErrConsumerError        = errors.New("consumer error")
+	ErrConsumerNotRunning   = errors.New("consumer is not running")
+	ErrConsumerNotStarted   = errors.New("consumer has not been started")
+	ErrInvalidOperation     = errors.New("invalid operation")
+	ErrInvalidReadTimeout   = errors.New("invalid read timeout (must be -1 or >= 0)")
+	ErrNoHandler            = errors.New("no handler for topic")
+	ErrNoHandlersConfigured = errors.New("no handlers configured")
+	ErrReprocessMessage     = errors.New("message will be reprocessed")
+	ErrRetryLimitReached    = errors.New("retry limit reached")
+	ErrTimeout              = errors.New("time out")
 )
 
 // ConfigurationError is an error that indicates a configuration error
