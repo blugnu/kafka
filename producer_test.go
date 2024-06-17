@@ -34,7 +34,7 @@ func TestCheckDeliveryEvent(t *testing.T) {
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
 			// ACT
-			tp, err := checkDeliveryEvent(tc.event)
+			tp, err := deliveryEvent(tc.event)
 
 			// ASSERT
 			test.That(t, result{tp: tp, error: err}).Equals(tc.result)
@@ -46,7 +46,7 @@ func TestProducerMustProduceWhenEncryptionFails(t *testing.T) {
 	// ARRANGE
 	ctx := context.Background()
 	encerr := errors.New("encryption error")
-	msg := &kafka.Message{}
+	msg := kafka.Message{}
 
 	sut := &producer{}
 	sut.cypher.encrypt = func(context.Context, *kafka.Message) error { return encerr }
@@ -75,7 +75,7 @@ func TestProducerMustProduceWhenEncryptionFails(t *testing.T) {
 func TestProducerMustProduce(t *testing.T) {
 	// ARRANGE
 	ctx := context.Background()
-	msg := &kafka.Message{
+	msg := kafka.Message{
 		TopicPartition: kafka.TopicPartition{
 			Topic:     test.AddressOf("topic"),
 			Partition: kafka.PartitionAny,
@@ -134,6 +134,49 @@ func TestProducerMustProduce(t *testing.T) {
 	}
 }
 
+func TestProducer_MustProduce_TimeoutRetries(t *testing.T) {
+	// ARRANGE
+	ctx := context.Background()
+	msg := kafka.Message{
+		TopicPartition: kafka.TopicPartition{
+			Topic:     test.AddressOf("topic"),
+			Partition: kafka.PartitionAny,
+			Offset:    kafka.OffsetEnd,
+		},
+	}
+	log := []struct {
+		msg  string
+		info LogInfo
+	}{}
+	defer test.Using(&logs.Debug, func(ctx context.Context, msg string, info LogInfo) {
+		log = append(log, struct {
+			msg  string
+			info LogInfo
+		}{msg: msg, info: info})
+	})()
+
+	sut := &producer{
+		maxRetries: 2,
+	}
+	sut.cypher = noEncryption
+	sut.funcs.prepareMessage = func(context.Context, *kafka.Message) error { return nil }
+	sut.funcs.checkDelivery = func(context.Context, *kafka.Message, error) {}
+
+	produceFuncCalls := 0
+	sut.funcs.produce = func(msg *kafka.Message, dc chan kafka.Event) error {
+		produceFuncCalls++
+		go func() { dc <- kafka.NewError(kafka.ErrMsgTimedOut, "fake timeout", true) }()
+		return nil
+	}
+
+	// ACT
+	_, err := sut.MustProduce(ctx, msg)
+
+	// ASSERT
+	test.Error(t, err).Is(ErrTimeout)
+	test.That(t, produceFuncCalls).Equals(3) // original call + 2 retry attempts
+}
+
 func TestProducerMessagePipeline(t *testing.T) {
 	// ARRANGE
 	ctx := context.Background()
@@ -158,8 +201,8 @@ func TestProducerMessagePipeline(t *testing.T) {
 			exec: func(t *testing.T) {
 				// ARRANGE
 				_ = sut.configure(&Config{config: kafka.ConfigMap{}})
-				msg := &kafka.Message{}
-				defer test.Using(&checkDeliveryEvent, func(kafka.Event) (*kafka.TopicPartition, error) {
+				msg := kafka.Message{}
+				defer test.Using(&deliveryEvent, func(kafka.Event) (*kafka.TopicPartition, error) {
 					return &kafka.TopicPartition{
 						Topic: test.AddressOf("topic"),
 					}, nil
@@ -178,7 +221,7 @@ func TestProducerMessagePipeline(t *testing.T) {
 		{scenario: "custom pipeline",
 			exec: func(t *testing.T) {
 				// ARRANGE
-				msg := &kafka.Message{}
+				msg := kafka.Message{}
 				beforeCalled := false
 				afterCalled := false
 				encryptCalled := false
@@ -186,7 +229,7 @@ func TestProducerMessagePipeline(t *testing.T) {
 				defer test.Using(&sut.cypher.encrypt, func(ctx context.Context, msg *kafka.Message) error { encryptCalled = true; return nil })()
 				defer test.Using(&sut.funcs.prepareMessage, func(context.Context, *kafka.Message) error { beforeCalled = true; return nil })()
 				defer test.Using(&sut.funcs.checkDelivery, func(context.Context, *kafka.Message, error) { afterCalled = true })()
-				defer test.Using(&checkDeliveryEvent, func(kafka.Event) (*kafka.TopicPartition, error) {
+				defer test.Using(&deliveryEvent, func(kafka.Event) (*kafka.TopicPartition, error) {
 					return &kafka.TopicPartition{
 						Topic: test.AddressOf("topic"),
 					}, nil
@@ -207,7 +250,7 @@ func TestProducerMessagePipeline(t *testing.T) {
 			exec: func(t *testing.T) {
 				// ARRANGE
 				preperr := errors.New("prepare error")
-				msg := &kafka.Message{}
+				msg := kafka.Message{}
 				beforeCalled := false
 				afterCalled := false
 				encryptCalled := false
@@ -474,4 +517,26 @@ func TestProducerLogsChannelGoRoutineTerminatesWhenChannelIsClosed(t *testing.T)
 
 func TestNewMockProducer(t *testing.T) {
 	_, _ = NewMockProducer[int](context.Background())
+}
+
+func TestProducer_Err_NilProducer(t *testing.T) {
+	// ARRANGE
+	var sut *producer
+
+	// ACT
+	err := sut.Err()
+
+	// ASSERT
+	test.Error(t, err).Is(ErrInvalidOperation)
+}
+
+func TestProducer_Err(t *testing.T) {
+	// ARRANGE
+	sut := &producer{err: errors.New("error")}
+
+	// ACT
+	err := sut.Err()
+
+	// ASSERT
+	test.Error(t, err).Is(sut.err)
 }

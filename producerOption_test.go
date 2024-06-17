@@ -28,6 +28,20 @@ func TestProducerOptions(t *testing.T) {
 				test.That(t, cfg.config["delivery.timeout.ms"].(int)).Equals(10)
 			},
 		},
+		{scenario: "MaxRetries",
+			exec: func(t *testing.T) {
+				// ARRANGE
+				cfg := &Config{}
+				p := &producer{}
+
+				// ACT
+				err := MaxRetries(10)(cfg, p)
+
+				// ASSERT
+				test.That(t, err).IsNil()
+				test.That(t, p.maxRetries).Equals(10)
+			},
+		},
 		{scenario: "MessageEncryption",
 			exec: func(t *testing.T) {
 				// ARRANGE

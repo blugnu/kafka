@@ -25,7 +25,7 @@ func TestMockProducerExpectedToProduceAnyMessageToTopic(t *testing.T) {
 	mock.Expect("topic")
 
 	topic := "topic"
-	msg := &kafka.Message{
+	msg := kafka.Message{
 		TopicPartition: kafka.TopicPartition{
 			Topic: &topic,
 		},
@@ -58,7 +58,7 @@ func TestMockProducerExpectedToProduceMultipleMessagesToTopic(t *testing.T) {
 	mock.Expect("topic")
 
 	topic := "topic"
-	msg := &kafka.Message{
+	msg := kafka.Message{
 		TopicPartition: kafka.TopicPartition{
 			Topic: &topic,
 		},
@@ -94,27 +94,15 @@ func TestMockProducerExpectedToReturnError(t *testing.T) {
 	mock := &Producer[string]{}
 	mock.Expect("topic").ReturnsError(perr)
 
-	msg := &kafka.Message{}
+	msg := kafka.Message{}
 
 	// ACT
 	off, err := mock.MustProduce(ctx, msg)
 
 	// ASSERT
-	t.Run("result", func(t *testing.T) {
-		got := off
-		if got != nil {
-			t.Errorf("\nwanted nil\ngot    %T", got)
-		}
-	})
-
-	t.Run("error", func(t *testing.T) {
-		wanted := perr
-		got := err
-		if !errors.Is(got, wanted) {
-			t.Errorf("\nwanted %#v\ngot    %#v", wanted, got)
-		}
-	})
-
+	test.That(t, off).IsNil()
+	test.Error(t, err).Is(perr)
+	test.Error(t, mock.Err()).Is(perr)
 	test.ExpectationsWereMet(t, mock)
 }
 
@@ -125,7 +113,7 @@ func TestMessageProducedToUnexpectedTopic(t *testing.T) {
 	mock := &Producer[string]{}
 	mock.Expect("topic")
 
-	msg := &kafka.Message{
+	msg := kafka.Message{
 		TopicPartition: kafka.TopicPartition{
 			Topic: test.AddressOf("other.topic"),
 		},
@@ -169,7 +157,7 @@ func TestMockProducerProducesUnexpectedMessage(t *testing.T) {
 	mock := &Producer[string]{}
 
 	topic := "topic"
-	msg := &kafka.Message{
+	msg := kafka.Message{
 		TopicPartition: kafka.TopicPartition{
 			Topic: &topic,
 		},
@@ -196,7 +184,7 @@ func TestMockProducerReset(t *testing.T) {
 		expectations: []*Expectation{{}},
 		unexpected:   []*kafka.Message{{}},
 		next:         1,
-		error:        errors.New("error"),
+		err:          errors.New("error"),
 	}
 
 	// ACT

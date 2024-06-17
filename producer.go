@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/blugnu/kafka/internal/mock"
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
@@ -13,7 +14,8 @@ import (
 var createProducer = kafka.NewProducer
 
 type Producer interface {
-	MustProduce(context.Context, *kafka.Message) (*kafka.TopicPartition, error)
+	Err() error
+	MustProduce(context.Context, kafka.Message) (*TopicPartition, error)
 }
 
 type MockProducer[T comparable] interface {
@@ -23,22 +25,25 @@ type MockProducer[T comparable] interface {
 }
 
 type producer struct {
+	sync.Mutex
 	*kafka.Producer
-	logsChannel chan kafka.LogEvent
 	cypher
-	funcs struct {
+	logsChannel chan kafka.LogEvent
+	maxRetries  int
+	err         error
+	funcs       struct {
 		checkDelivery  func(context.Context, *Message, error)
 		prepareMessage func(context.Context, *Message) error
 		produce        func(*kafka.Message, chan kafka.Event) error
 	}
 }
 
-// checkDeliveryEvent checks a delivery event and returns the message
+// deliveryEvent takes a delivery event and returns the message
 // and error if any.
 //
 // If the event is not a message or error, an UnexpectedDeliveryEvent
 // error is returned.
-var checkDeliveryEvent = func(ev kafka.Event) (*kafka.TopicPartition, error) {
+var deliveryEvent = func(ev kafka.Event) (*kafka.TopicPartition, error) {
 	switch ev := ev.(type) {
 	case *kafka.Message:
 		return &ev.TopicPartition, ev.TopicPartition.Error
@@ -92,8 +97,47 @@ func (p *producer) configure(config *Config, opts ...ProducerOption) error {
 	return nil
 }
 
-func (p *producer) MustProduce(ctx context.Context, msg *Message) (*kafka.TopicPartition, error) {
-	handle := func(err error) (*kafka.TopicPartition, error) {
+// Err returns the last error that occurred when producing a message.  If no error
+// has occurred, nil is returned.  Any error is cleared after a successful call to
+// Produce.
+//
+// Err is safe to call concurrently.
+//
+// If the producer is nil, ErrInvalidOperation is returned.
+//
+// The function is intended to be used in concurrent health checks.  For example a
+// K8s liveness HTTP probe endpoint might call this function.
+func (p *producer) Err() error {
+	if p == nil {
+		return fmt.Errorf("%w: producer is nil", ErrInvalidOperation)
+	}
+
+	p.Lock()
+	defer p.Unlock()
+
+	return p.err
+}
+
+// MustProduce produces a message and returns the topic partition if successful, or an error.
+//
+// If the producer is nil, ErrInvalidOperation is returned.
+//
+// If an error occurs, the error is stored in the producer as well as returned to the caller.
+// The stored error is intended to be used in concurrent health checks using the Err() method.
+// Any stored error is cleared only after a subsequent successful call to Produce (or replaced
+// by a later error).
+//
+// If a message timeout error occurs, the producer will retry producing the message up to the
+// configured maximum number of retries.  If the maximum number of retries is reached, ErrTimeout
+// is returned and stored for retrieval by Err().  A timeout error will not replace any current
+// error already stored on the producer until the retry limit has been reached.
+func (p *producer) MustProduce(ctx context.Context, msg Message) (*TopicPartition, error) {
+	handle := func(err error) (*TopicPartition, error) {
+		p.Lock()
+		defer p.Unlock()
+
+		p.err = err
+
 		logs.Error(ctx, "error producing message", LogInfo{
 			Topic: msg.TopicPartition.Topic,
 			Error: err,
@@ -104,27 +148,45 @@ func (p *producer) MustProduce(ctx context.Context, msg *Message) (*kafka.TopicP
 
 	dc := make(chan kafka.Event)
 	defer close(dc)
+	{
+		msg := msg
 
-	if err := p.funcs.prepareMessage(ctx, msg); err != nil {
-		return handle(fmt.Errorf("prepare: %w", err))
+		if err := p.funcs.prepareMessage(ctx, &msg); err != nil {
+			return handle(fmt.Errorf("prepare: %w", err))
+		}
+
+		if err := p.encrypt(ctx, &msg); err != nil {
+			return handle(fmt.Errorf("encrypt: %w", err))
+		}
+
+		var (
+			tp    *kafka.TopicPartition
+			err   error
+			retry int
+		)
+		for { // timeout retries
+			if err = p.funcs.produce(&msg, dc); err != nil {
+				return handle(fmt.Errorf("produce: %w", err))
+			}
+
+			tp, err = deliveryEvent(<-dc)
+			if err, ok := err.(kafka.Error); ok && err.Code() == kafka.ErrMsgTimedOut {
+				if retry++; retry > p.maxRetries {
+					return nil, ErrTimeout
+				}
+				logs.Debug(ctx, "delivery timeout; retrying", LogInfo{Topic: msg.TopicPartition.Topic})
+				continue
+			}
+			break
+		}
+		if p.funcs.checkDelivery(ctx, &msg, err); err != nil {
+			return handle(fmt.Errorf("delivery: %w", err))
+		}
+		p.err = nil
+
+		logs.Info(ctx, "message produced", LogInfo{Topic: tp.Topic})
+		return tp, nil
 	}
-
-	if err := p.encrypt(ctx, msg); err != nil {
-		return handle(fmt.Errorf("encrypt: %w", err))
-	}
-
-	if err := p.funcs.produce(msg, dc); err != nil {
-		return handle(fmt.Errorf("produce: %w", err))
-	}
-
-	tp, err := checkDeliveryEvent(<-dc)
-	if p.funcs.checkDelivery(ctx, msg, err); err != nil {
-		return handle(fmt.Errorf("delivery: %w", err))
-	}
-
-	logs.Info(ctx, "message produced", LogInfo{Topic: tp.Topic})
-
-	return tp, nil
 }
 
 func NewMockProducer[T comparable](ctx context.Context) (Producer, MockProducer[T]) {
@@ -135,7 +197,9 @@ func NewMockProducer[T comparable](ctx context.Context) (Producer, MockProducer[
 func NewProducer(ctx context.Context, config *Config, opts ...ProducerOption) (Producer, error) {
 	config = config.clone()
 
-	p := &producer{}
+	p := &producer{
+		maxRetries: 2,
+	}
 	if err := p.configure(config, opts...); err != nil {
 		return nil, fmt.Errorf("kafka.NewProducer: %w", err)
 	}

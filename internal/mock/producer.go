@@ -79,7 +79,12 @@ type Producer[T comparable] struct {
 	unexpected   []*kafka.Message
 	messages     map[string][]*kafka.Message
 	next         int
-	error
+	err          error
+}
+
+// Err returns the error that was set on the Producer.
+func (p *Producer[T]) Err() error {
+	return p.err
 }
 
 func (p *Producer[T]) Expect(topic T) *Expectation {
@@ -104,12 +109,12 @@ func (p *Producer[T]) ExpectationsWereMet() error {
 	return nil
 }
 
-func (p *Producer[T]) MustProduce(ctx context.Context, msg *kafka.Message) (*kafka.TopicPartition, error) {
+func (p *Producer[T]) MustProduce(ctx context.Context, msg kafka.Message) (*kafka.TopicPartition, error) {
 	if p.next == 0 {
 		p.messages = map[string][]*kafka.Message{}
 	}
 
-	m := *msg
+	cpy := msg
 	tp := &kafka.TopicPartition{
 		Topic:     msg.TopicPartition.Topic,
 		Partition: 0,
@@ -117,7 +122,7 @@ func (p *Producer[T]) MustProduce(ctx context.Context, msg *kafka.Message) (*kaf
 	if msg.TopicPartition.Topic != nil {
 		topic := *msg.TopicPartition.Topic
 		tp.Offset = kafka.Offset(len(p.messages[topic]))
-		p.messages[topic] = append(p.messages[topic], &m)
+		p.messages[topic] = append(p.messages[topic], &cpy)
 	} else {
 		tp.Error = errors.New("topic not set")
 	}
@@ -125,7 +130,8 @@ func (p *Producer[T]) MustProduce(ctx context.Context, msg *kafka.Message) (*kaf
 	p.next++
 	if p.next <= len(p.expectations) {
 		ex := p.expectations[p.next-1]
-		ex.msg = &m
+		ex.msg = &cpy
+		p.err = ex.err
 
 		if ex.err != nil {
 			ex.met = true
@@ -142,10 +148,10 @@ func (p *Producer[T]) MustProduce(ctx context.Context, msg *kafka.Message) (*kaf
 			ex.headers.Equal(msg.Headers) &&
 			ex.header.In(msg.Headers)
 	} else {
-		p.unexpected = append(p.unexpected, &m)
+		p.unexpected = append(p.unexpected, &cpy)
 	}
 
-	return tp, coalesce(tp.Error, p.error)
+	return tp, coalesce(tp.Error, p.err)
 }
 
 func (p *Producer[T]) Reset() {
