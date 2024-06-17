@@ -51,3 +51,59 @@ func TestHandlerFunc(t *testing.T) {
 		})
 	}
 }
+
+func TestIf(t *testing.T) {
+	// ARRANGE
+	ctx := context.Background()
+
+	testcases := []struct {
+		scenario string
+		exec     func(t *testing.T)
+	}{
+		{scenario: "condition met",
+			exec: func(t *testing.T) {
+				// ARRANGE
+				handlerIsCalled := false
+				condition := func(m *kafka.Message) bool {
+					return true
+				}
+				handler := HandlerFunc(func(ctx context.Context, m *kafka.Message) error {
+					handlerIsCalled = true
+					return nil
+				})
+
+				// ACT
+				err := If(condition, handler).HandleMessage(ctx, nil)
+
+				// ASSERT
+				test.That(t, err).IsNil()
+				test.IsTrue(t, handlerIsCalled)
+			},
+		},
+		{scenario: "condition not met",
+			exec: func(t *testing.T) {
+				// ARRANGE
+				handlerIsCalled := false
+				condition := func(m *kafka.Message) bool {
+					return false
+				}
+				handler := HandlerFunc(func(ctx context.Context, m *kafka.Message) error {
+					handlerIsCalled = true
+					return nil
+				})
+
+				// ACT
+				err := If(condition, handler).HandleMessage(ctx, nil)
+
+				// ASSERT
+				test.That(t, err).IsNil()
+				test.IsFalse(t, handlerIsCalled)
+			},
+		},
+	}
+	for _, tc := range testcases {
+		t.Run(tc.scenario, func(t *testing.T) {
+			tc.exec(t)
+		})
+	}
+}

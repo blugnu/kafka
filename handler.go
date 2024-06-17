@@ -52,3 +52,15 @@ func (fn HandlerFunc) HandleMessage(ctx context.Context, msg *Message) error {
 type Handler interface {
 	HandleMessage(context.Context, *Message) error
 }
+
+// If returns a Handler that only calls the given Handler if the given condition
+// function returns true for the message.  If the condition function returns false,
+// the message is ignored and the Handler is not called.
+func If(cond func(*Message) bool, h Handler) Handler {
+	return HandlerFunc(func(ctx context.Context, msg *Message) error {
+		if cond(msg) {
+			return h.HandleMessage(ctx, msg)
+		}
+		return nil
+	})
+}
