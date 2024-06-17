@@ -13,18 +13,18 @@ import (
 )
 
 type LogInfo struct {
-	Consumer *string
-	Offset   *kafka.TopicPartition
-	*Message
-	Error     error
-	Reason    *string
-	Recovered *any
-	Topic     *string
-	Topics    *[]string
+	Consumer  *string `json:"consumer,omitempty"`
+	Error     error   `json:"error,omitempty"`
+	*Message  `json:"message,omitempty"`
+	Offset    *kafka.TopicPartition `json:"offset,omitempty"`
+	Reason    *string               `json:"reason,omitempty"`
+	Recovered *any                  `json:"recovered,omitempty"`
+	Topic     *string               `json:"topic,omitempty"`
+	Topics    *[]string             `json:"topics,omitempty"`
 }
 
 func (LogInfo) messageString(m Message) string {
-	e := []string{fmt.Sprintf("offset=%s", OffsetString(m.TopicPartition))}
+	e := []string{fmt.Sprintf("offset=%s", OffsetInfo(m.TopicPartition))}
 
 	if len(m.Key) > 0 {
 		e = append(e, fmt.Sprintf("key=[%s]", m.Key))
@@ -60,7 +60,7 @@ func (l LogInfo) String() string {
 	}
 
 	add("consumer", l.Consumer, func(a any) string { return a.(string) })
-	add("offset", l.Offset, func(a any) string { return OffsetString(a.(kafka.TopicPartition)) })
+	add("offset", l.Offset, func(a any) string { return OffsetInfo(a.(kafka.TopicPartition)).String() })
 	add("message", l.Message, func(a any) string { return l.messageString(a.(kafka.Message)) })
 	if l.Error != nil {
 		e = append(e, fmt.Sprintf("error=%q", l.Error))
@@ -82,9 +82,7 @@ type Loggers struct {
 
 func (l *Loggers) useDefault() bool {
 	return l == nil ||
-		(l.Debug == nil &&
-			l.Info == nil &&
-			l.Error == nil)
+		(l.Debug == nil && l.Info == nil && l.Error == nil)
 }
 
 func noLog(context.Context, string, LogInfo) { /* NO-OP */ }
