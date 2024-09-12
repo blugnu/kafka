@@ -8,11 +8,13 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/blugnu/test"
+	"github.com/blugnu/ulog"
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
@@ -36,11 +38,11 @@ func TestConsumer_cleanup(t *testing.T) {
 			exec: func(t *testing.T) {
 				// ARRANGE
 				ctx := context.Background()
-				stopped := false
+				waitersNotified := false
 				sut := &consumer{
 					Consumer: &kafka.Consumer{},
 					sig:      make(chan os.Signal, 1),
-					stopped:  make(chan error, 1),
+					waiting:  []chan error{make(chan error, 1)},
 				}
 				sut.funcs.close = func() error { return nil }
 
@@ -50,25 +52,25 @@ func TestConsumer_cleanup(t *testing.T) {
 				ctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 				defer cancel()
 				select {
-				case <-sut.stopped:
-					stopped = true
+				case <-sut.waiting[0]:
+					waitersNotified = true
 				case <-ctx.Done():
-					stopped = false
+					waitersNotified = false
 				}
 
 				// ASSERT
-				test.IsTrue(t, stopped)
+				test.IsTrue(t, waitersNotified)
 			},
 		},
 		{scenario: "error, no panic",
 			exec: func(t *testing.T) {
 				// ARRANGE
 				ctx := context.Background()
-				stopped := false
+				waitersNotified := false
 				sut := &consumer{
 					Consumer: &kafka.Consumer{},
 					sig:      make(chan os.Signal, 1),
-					stopped:  make(chan error, 1),
+					waiting:  []chan error{make(chan error, 1)},
 				}
 				sut.funcs.close = func() error { return errors.New("the error") }
 
@@ -78,25 +80,25 @@ func TestConsumer_cleanup(t *testing.T) {
 				ctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 				defer cancel()
 				select {
-				case <-sut.stopped:
-					stopped = true
+				case <-sut.waiting[0]:
+					waitersNotified = true
 				case <-ctx.Done():
-					stopped = false
+					waitersNotified = false
 				}
 
 				// ASSERT
-				test.IsTrue(t, stopped)
+				test.IsTrue(t, waitersNotified)
 			},
 		},
 		{scenario: "no error, panic",
 			exec: func(t *testing.T) {
 				// ARRANGE
 				ctx := context.Background()
-				stopped := false
+				waitersNotified := false
 				sut := &consumer{
 					Consumer: &kafka.Consumer{},
 					sig:      make(chan os.Signal, 1),
-					stopped:  make(chan error, 1),
+					waiting:  []chan error{make(chan error, 1)},
 				}
 				recovered := "panic"
 				sut.funcs.close = func() error { return nil }
@@ -107,14 +109,14 @@ func TestConsumer_cleanup(t *testing.T) {
 				ctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 				defer cancel()
 				select {
-				case <-sut.stopped:
-					stopped = true
+				case <-sut.waiting[0]:
+					waitersNotified = true
 				case <-ctx.Done():
-					stopped = false
+					waitersNotified = false
 				}
 
 				// ASSERT
-				test.IsTrue(t, stopped)
+				test.IsTrue(t, waitersNotified)
 			},
 		},
 	}
@@ -197,12 +199,10 @@ func TestConsumer_commitOffset(t *testing.T) {
 				{
 					"offset committed",
 					LogInfo{
-						Consumer: addr("consumer-id"),
-						Offset: &kafka.TopicPartition{
-							Topic:     msg.TopicPartition.Topic,
-							Partition: msg.TopicPartition.Partition,
-							Offset:    tc.commits,
-						},
+						Consumer:  addr("consumer-id"),
+						Topic:     msg.TopicPartition.Topic,
+						Partition: addr(msg.TopicPartition.Partition),
+						Offset:    addr(tc.commits),
 					},
 				},
 			})
@@ -265,7 +265,7 @@ func TestConsumer_commit_WhenNoOffsetToCommit(t *testing.T) {
 func TestConsumer_consume(t *testing.T) {
 	// ARRANGE
 	ctx := context.Background()
-	msg := &kafka.Message{TopicPartition: kafka.TopicPartition{Topic: test.AddressOf("topic"), Partition: 0, Offset: 10}}
+	msg := &kafka.Message{TopicPartition: kafka.TopicPartition{Topic: addr("topic"), Partition: 0, Offset: 10}}
 
 	rerr := errors.New("readMessage error")
 	herr := errors.New("handler error")
@@ -301,10 +301,12 @@ func TestConsumer_consume(t *testing.T) {
 			}}},
 		{name: "when handler returns nil, commit fails", commitErr: cerr, result: result{readNext: true, error: cerr, committed: true,
 			logs: []logEvent{
-				{"commit failed", LogInfo{
-					Consumer: addr("consumer-id"),
-					Message:  msg,
-					Error:    cerr,
+				{"commit offset error", LogInfo{
+					Consumer:  addr("consumer-id"),
+					Topic:     msg.TopicPartition.Topic,
+					Partition: addr(msg.TopicPartition.Partition),
+					Offset:    addr(msg.TopicPartition.Offset),
+					Error:     cerr,
 				}, "error"},
 			}}},
 		{name: "when handler returns ErrReprocessMessage", handlerErr: ErrReprocessMessage, result: result{readNext: false, committed: true,
@@ -312,14 +314,10 @@ func TestConsumer_consume(t *testing.T) {
 				{level: "debug",
 					string: "message will be reprocessed",
 					LogInfo: LogInfo{
-						Consumer: addr("consumer-id"),
-						Message: &kafka.Message{
-							TopicPartition: kafka.TopicPartition{
-								Topic:     msg.TopicPartition.Topic,
-								Partition: msg.TopicPartition.Partition,
-								Offset:    msg.TopicPartition.Offset,
-							},
-						},
+						Consumer:  addr("consumer-id"),
+						Topic:     msg.TopicPartition.Topic,
+						Partition: addr(msg.TopicPartition.Partition),
+						Offset:    addr(msg.TopicPartition.Offset),
 					}},
 			}},
 		},
@@ -328,27 +326,19 @@ func TestConsumer_consume(t *testing.T) {
 				{level: "debug",
 					string: "message will be reprocessed",
 					LogInfo: LogInfo{
-						Consumer: addr("consumer-id"),
-						Message: &kafka.Message{
-							TopicPartition: kafka.TopicPartition{
-								Topic:     msg.TopicPartition.Topic,
-								Partition: msg.TopicPartition.Partition,
-								Offset:    msg.TopicPartition.Offset,
-							},
-						},
+						Consumer:  addr("consumer-id"),
+						Topic:     msg.TopicPartition.Topic,
+						Partition: addr(msg.TopicPartition.Partition),
+						Offset:    addr(msg.TopicPartition.Offset),
 					}},
 				{level: "error",
-					string: "commit failed",
+					string: "commit offset error",
 					LogInfo: LogInfo{
-						Consumer: addr("consumer-id"),
-						Message: &kafka.Message{
-							TopicPartition: kafka.TopicPartition{
-								Topic:     msg.TopicPartition.Topic,
-								Partition: msg.TopicPartition.Partition,
-								Offset:    msg.TopicPartition.Offset,
-							},
-						},
-						Error: cerr,
+						Consumer:  addr("consumer-id"),
+						Topic:     msg.TopicPartition.Topic,
+						Partition: addr(msg.TopicPartition.Partition),
+						Offset:    addr(msg.TopicPartition.Offset),
+						Error:     cerr,
 					}},
 			}}},
 		{name: "when handler returns other error", handlerErr: herr, result: result{readNext: false, error: herr, committed: false,
@@ -356,15 +346,11 @@ func TestConsumer_consume(t *testing.T) {
 				{level: "error",
 					string: "handler error",
 					LogInfo: LogInfo{
-						Consumer: addr("consumer-id"),
-						Message: &kafka.Message{
-							TopicPartition: kafka.TopicPartition{
-								Topic:     msg.TopicPartition.Topic,
-								Partition: msg.TopicPartition.Partition,
-								Offset:    msg.TopicPartition.Offset,
-							},
-						},
-						Error: herr,
+						Consumer:  addr("consumer-id"),
+						Topic:     msg.TopicPartition.Topic,
+						Partition: addr(msg.TopicPartition.Partition),
+						Offset:    addr(msg.TopicPartition.Offset),
+						Error:     herr,
 					}},
 			}}},
 		{name: "when handler returns nil", result: result{readNext: true, committed: true}},
@@ -415,34 +401,91 @@ func TestConsumer_consume(t *testing.T) {
 func TestConsumer_handleMessage(t *testing.T) {
 	// ARRANGE
 	ctx := context.Background()
-	msg := &kafka.Message{TopicPartition: kafka.TopicPartition{Topic: test.AddressOf("topic"), Partition: 0, Offset: 10}}
+	msg := &kafka.Message{TopicPartition: kafka.TopicPartition{Topic: addr("topic"), Partition: 1, Offset: 10}}
+	herr := errors.New("handler error")
 	dcerr := errors.New("decrypt error")
-
-	sut := &consumer{handlers: map[string]Handler{"topic": HandlerFunc(nil)}}
 
 	testcases := []struct {
 		name       string
 		topic      string
 		decryptErr error
+		err        error
+		panic      any
+		logs       func(ulog.MockLog)
 		result     error
 	}{
 		{name: "no handler for topic", topic: "unknown", result: ErrNoHandler},
 		{name: "decrypt error", topic: "topic", decryptErr: dcerr, result: dcerr},
+		{name: "handler error", topic: "topic", err: herr, result: herr,
+			logs: func(log ulog.MockLog) {
+				log.ExpectEntry(
+					ulog.AtLevel(ulog.ErrorLevel),
+					ulog.WithMessage("handler error"),
+					ulog.WithFieldValues(map[string]string{
+						"consumer":  "consumer-id",
+						"topic":     "topic",
+						"partition": "1",
+						"offset":    "10",
+						"error":     "handler error",
+					}),
+				)
+			},
+		},
+		{name: "handler panic", topic: "topic", panic: "handler panic", result: ConsumerPanicError{Recovered: "handler panic"},
+			logs: func(log ulog.MockLog) {
+				log.ExpectEntry(
+					ulog.AtLevel(ulog.ErrorLevel),
+					ulog.WithMessage("handler panic"),
+					ulog.WithFieldValues(map[string]string{
+						"consumer":  "consumer-id",
+						"topic":     "topic",
+						"partition": "1",
+						"offset":    "10",
+						"recovered": "handler panic",
+					}),
+				)
+			},
+		},
 	}
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
 			// ARRANGE
-			msg.TopicPartition.Topic = test.AddressOf(tc.topic)
+			sut := &consumer{
+				groupId: "consumer-id",
+				handlers: map[string]Handler{
+					"topic": HandlerFunc(func(context.Context, *Message) error {
+						if tc.panic != nil {
+							panic(tc.panic)
+						}
+						return tc.err
+					}),
+				},
+			}
+			msg.TopicPartition.Topic = addr(tc.topic)
 			defer test.Using(&sut.cypher.decrypt, func(context.Context, *Message) error { return tc.decryptErr })()
 
+			logger, log := ulog.NewMock()
+			if tc.logs != nil {
+				tc.logs(log)
+			}
+			defer test.Using(&logs, Loggers{
+				Error: func(ctx context.Context, s string, li LogInfo) {
+					log := logger
+					for k, v := range li.fields() {
+						log = log.WithField(k, v)
+					}
+					log.Error(s)
+				},
+			})()
+
+			defer test.ExpectPanic(tc.panic).Assert(t)
+
 			// ACT
-			got := sut.handleMessage(ctx, msg)
+			err := sut.handleMessage(ctx, msg)
 
 			// ASSERT
-			wanted := tc.result
-			if !errors.Is(got, wanted) {
-				t.Errorf("\nwanted %#v\ngot    %#v", wanted, got)
-			}
+			test.Error(t, err).Is(tc.result)
+			test.ExpectationsWereMet(t, log)
 		})
 	}
 }
@@ -480,7 +523,7 @@ func TestConsumer_run_TerminatesWhenContextIsCancelled(t *testing.T) {
 	ctx := context.Background()
 	sut := &consumer{
 		sig:     make(chan os.Signal, 1),
-		stopped: make(chan error, 1),
+		waiting: []chan error{make(chan error, 1)},
 	}
 	sut.funcs.close = func() error { return nil }
 	sut.funcs.readMessage = func(time.Duration) (*kafka.Message, error) { return nil, ErrTimeout }
@@ -491,15 +534,11 @@ func TestConsumer_run_TerminatesWhenContextIsCancelled(t *testing.T) {
 		defer cancel()
 
 		go sut.run(ctx)
-		<-sut.stopped
+		<-sut.waiting[0]
 	}()
 
 	// ASSERT
-	wanted := csStopped
-	got := sut.state
-	if wanted != got {
-		t.Errorf("\nwanted %#v\ngot    %#v", wanted, got)
-	}
+	test.That(t, sut.state.value).Equals(csStopped)
 }
 
 func TestConsumer_run_TerminatesOnPanic(t *testing.T) {
@@ -508,7 +547,7 @@ func TestConsumer_run_TerminatesOnPanic(t *testing.T) {
 	sut := &consumer{
 		cypher:  noEncryption,
 		sig:     make(chan os.Signal, 1),
-		stopped: make(chan error, 1),
+		waiting: []chan error{make(chan error, 1)},
 	}
 	sut.funcs.close = func() error { return nil }
 	sut.funcs.readMessage = func(time.Duration) (*kafka.Message, error) { panic("panic!") }
@@ -519,11 +558,11 @@ func TestConsumer_run_TerminatesOnPanic(t *testing.T) {
 		defer cancel()
 
 		go sut.run(ctx)
-		<-sut.stopped
+		<-sut.waiting[0]
 	}()
 
 	// ASSERT
-	test.That(t, sut.state).Equals(csPanic)
+	test.That(t, sut.state.value).Equals(csPanic)
 }
 
 func TestConsumer_run_TerminatesOnCtrlC(t *testing.T) {
@@ -532,7 +571,7 @@ func TestConsumer_run_TerminatesOnCtrlC(t *testing.T) {
 	sut := &consumer{
 		cypher:  noEncryption,
 		sig:     make(chan os.Signal, 1),
-		stopped: make(chan error, 1),
+		waiting: []chan error{make(chan error, 1)},
 	}
 	sut.funcs.close = func() error { return nil }
 
@@ -545,15 +584,11 @@ func TestConsumer_run_TerminatesOnCtrlC(t *testing.T) {
 		defer cancel()
 
 		go sut.run(ctx)
-		<-sut.stopped
+		<-sut.waiting[0]
 	}()
 
 	// ASSERT
-	wanted := csStopped
-	got := sut.state
-	if wanted != got {
-		t.Errorf("\nwanted %#v\ngot    %#v", wanted, got)
-	}
+	test.That(t, sut.state.value).Equals(csStopped)
 }
 
 func TestConsumer_run_TerminatesOnHandlerError(t *testing.T) {
@@ -562,7 +597,7 @@ func TestConsumer_run_TerminatesOnHandlerError(t *testing.T) {
 	sut := &consumer{
 		cypher:  noEncryption,
 		sig:     make(chan os.Signal, 1),
-		stopped: make(chan error, 1),
+		waiting: []chan error{make(chan error, 1)},
 	}
 	sut.funcs.close = func() error { return nil }
 	sut.funcs.readMessage = func(time.Duration) (*kafka.Message, error) {
@@ -579,11 +614,11 @@ func TestConsumer_run_TerminatesOnHandlerError(t *testing.T) {
 		defer cancel()
 
 		go sut.run(ctx)
-		<-sut.stopped
+		<-sut.waiting[0]
 	}()
 
 	// ASSERT
-	test.That(t, sut.state).Equals(csStopped)
+	test.That(t, sut.state.value).Equals(csStopped)
 }
 
 func TestConsumer_run_ContinuesOnTimeout(t *testing.T) {
@@ -591,7 +626,7 @@ func TestConsumer_run_ContinuesOnTimeout(t *testing.T) {
 	ctx := context.Background()
 	sut := &consumer{
 		sig:     make(chan os.Signal, 1),
-		stopped: make(chan error, 1),
+		waiting: []chan error{make(chan error, 1)},
 		handlers: map[string]Handler{
 			"topic": HandlerFunc(func(context.Context, *kafka.Message) error { return nil }),
 		},
@@ -627,11 +662,11 @@ func TestConsumer_run_ContinuesOnTimeout(t *testing.T) {
 		defer cancel()
 
 		go sut.run(ctx)
-		<-sut.stopped
+		<-sut.waiting[0]
 	}()
 
 	// ASSERT
-	test.That(t, sut.state).Equals(csStopped)
+	test.That(t, sut.state.value).Equals(csStopped)
 	test.That(t, msgs).Equals(5)
 }
 
@@ -641,7 +676,7 @@ func TestConsumerStoppedChannelIsSignalledWhenConsumerHasStopped(t *testing.T) {
 
 	sut := &consumer{
 		sig:     make(chan os.Signal, 1),
-		stopped: make(chan error, 1),
+		waiting: []chan error{make(chan error, 1)},
 	}
 	sut.funcs.close = func() error { return nil }
 	sut.funcs.readMessage = func(time.Duration) (*kafka.Message, error) { return nil, ErrTimeout }
@@ -653,15 +688,11 @@ func TestConsumerStoppedChannelIsSignalledWhenConsumerHasStopped(t *testing.T) {
 
 		go sut.run(ctx)
 
-		<-sut.stopped
+		<-sut.waiting[0]
 	}()
 
 	// ASSERT
-	wanted := true
-	got := sut.state == csStopped
-	if wanted != got {
-		t.Errorf("\nwanted %#v\ngot    %#v", wanted, got)
-	}
+	test.That(t, sut.state.value).Equals(csStopped)
 }
 
 func TestConsumer_IsRunning_NilConsumer(t *testing.T) {
@@ -699,7 +730,8 @@ func TestConsumer_IsRunning_ConsumerError(t *testing.T) {
 
 func TestConsumer_IsRunning_Running(t *testing.T) {
 	// ARRANGE
-	sut := &consumer{state: csRunning}
+	sut := &consumer{}
+	sut.state.value = csRunning
 
 	// ACT
 	err := sut.IsRunning()
@@ -724,9 +756,9 @@ func TestConsumer_Start_NoConfiguredHandlers(t *testing.T) {
 	// ARRANGE
 	ctx := context.Background()
 	sut := &consumer{
-		state:    csReady,
 		handlers: map[string]Handler{},
 	}
+	sut.state.value = csReady
 
 	// ACT
 	err := sut.Start(ctx)
@@ -739,12 +771,12 @@ func TestConsumer_Start_SubscribesToTopics(t *testing.T) {
 	// ARRANGE
 	ctx := context.Background()
 	sut := &consumer{
-		state: csReady,
 		handlers: map[string]Handler{
 			"topic.1": HandlerFunc(nil),
 			"topic.2": HandlerFunc(nil),
 		},
 	}
+	sut.state.value = csReady
 	suberr := errors.New("subscribe error")
 	subscribed := []string{}
 	sut.funcs.subscribe = func(topics []string, rc kafka.RebalanceCb) error {
@@ -767,11 +799,11 @@ func TestConsumer_Start_StartsTheRunLoop(t *testing.T) {
 	// ARRANGE
 	ctx := context.Background()
 	sut := &consumer{
-		state:    csReady,
 		handlers: map[string]Handler{"topic.1": HandlerFunc(nil)},
 		sig:      make(chan os.Signal, 1),
-		stopped:  make(chan error, 1),
+		waiting:  []chan error{make(chan error, 1)},
 	}
+	sut.state.value = csReady
 	signal.Notify(sut.sig, os.Interrupt)
 
 	sut.funcs.close = func() error { return nil }
@@ -792,7 +824,7 @@ func TestConsumer_Start_StartsTheRunLoop(t *testing.T) {
 		defer cancel()
 
 		err = sut.Start(ctx)
-		<-sut.stopped
+		<-sut.waiting[0]
 	}()
 
 	// ASSERT
@@ -832,9 +864,9 @@ func TestConsumer_Stop_NotStarted(t *testing.T) {
 func TestConsumer_Stop_ConsumerRunning(t *testing.T) {
 	// ARRANGE
 	sut := &consumer{
-		state: csRunning,
-		sig:   make(chan os.Signal, 1),
+		sig: make(chan os.Signal, 1),
 	}
+	sut.state.value = csRunning
 
 	// ACT
 	err := sut.Stop()
@@ -846,9 +878,9 @@ func TestConsumer_Stop_ConsumerRunning(t *testing.T) {
 func TestConsumer_Stop_ConsumerError(t *testing.T) {
 	// ARRANGE
 	sut := &consumer{
-		state: csStopped,
-		err:   errors.New("consumer error"),
+		err: errors.New("consumer error"),
 	}
+	sut.state.value = csStopped
 
 	// ACT
 	err := sut.Stop()
@@ -1068,27 +1100,11 @@ func TestConsumerLogsChannelGoRoutineTerminatesWhenChannelIsClosed(t *testing.T)
 
 func TestConsumerWait(t *testing.T) {
 	// ARRANGE
+	ctx := context.Background()
 	testcases := []struct {
 		scenario string
 		exec     func(t *testing.T)
 	}{
-		{scenario: "consumer stopped with error",
-			exec: func(t *testing.T) {
-				// ARRANGE
-				conerr := errors.New("error")
-				sut := &consumer{
-					state:   csRunning,
-					stopped: make(chan error, 1),
-				}
-				sut.stopped <- conerr
-
-				// ACT
-				err := sut.Wait()
-
-				// ASSERT
-				test.Error(t, err).Is(conerr)
-			},
-		},
 		{scenario: "consumer is nil",
 			exec: func(t *testing.T) {
 				// ARRANGE
@@ -1113,22 +1129,88 @@ func TestConsumerWait(t *testing.T) {
 				test.Error(t, err).Is(ErrConsumerNotStarted)
 			},
 		},
-		{scenario: "multiple Wait() calls",
+		{scenario: "consumer already stopped",
 			exec: func(t *testing.T) {
 				// ARRANGE
+				conerr := errors.New("consumer error")
 				sut := &consumer{
-					state:   csStopped,
-					stopped: make(chan error, 1),
+					err: conerr,
 				}
-				sut.stopped <- nil
+				sut.state.value = csStopped
 
 				// ACT
 				err := sut.Wait()
-				err2 := sut.Wait()
 
 				// ASSERT
-				test.That(t, err).IsNil()
-				test.Error(t, err2).Is(ErrInvalidOperation)
+				test.Error(t, err).Is(conerr)
+			},
+		},
+		{scenario: "consumer stops with error",
+			exec: func(t *testing.T) {
+				// ARRANGE
+				conerr := errors.New("consumer error")
+				sut := &consumer{
+					// bypass the usual initialisation of the consumer
+					sig: make(chan os.Signal, 1),
+					handlers: map[string]Handler{
+						"topic": HandlerFunc(func(context.Context, *kafka.Message) error { return nil }),
+					},
+				}
+				sut.state.value = csReady
+
+				// subscribing and closing will be (successful) NO-OPs
+				sut.funcs.subscribe = func([]string, kafka.RebalanceCb) error { return nil }
+				sut.funcs.close = func() error { return nil }
+
+				// readMessage will immediately return an error to stop the consumer
+				sut.funcs.readMessage = func(time.Duration) (*kafka.Message, error) {
+					return nil, conerr
+				}
+
+				_ = sut.Start(ctx)
+
+				// ACT
+				err := sut.Wait()
+
+				// ASSERT
+				test.Error(t, err).Is(conerr)
+			},
+		},
+		{scenario: "multiple waiters",
+			exec: func(t *testing.T) {
+				// ARRANGE
+				conerr := errors.New("consumer error")
+				sut := &consumer{
+					// bypass the usual initialisation of the consumer
+					sig: make(chan os.Signal, 1),
+					handlers: map[string]Handler{
+						"topic": HandlerFunc(func(context.Context, *kafka.Message) error { return nil }),
+					},
+				}
+				sut.state.value = csReady
+
+				// subscribing and closing will be (successful) NO-OPs
+				sut.funcs.subscribe = func([]string, kafka.RebalanceCb) error { return nil }
+				sut.funcs.close = func() error { return nil }
+
+				// readMessage will immediately return an error to stop the consumer
+				sut.funcs.readMessage = func(time.Duration) (*kafka.Message, error) {
+					return nil, conerr
+				}
+
+				_ = sut.Start(ctx)
+
+				// ACT
+				var err1, err2 error
+				wg := sync.WaitGroup{}
+				wg.Add(2)
+				go func() { err1 = sut.Wait(); wg.Done() }()
+				go func() { err2 = sut.Wait(); wg.Done() }()
+				wg.Wait()
+
+				// ASSERT
+				test.Error(t, err1).Is(conerr)
+				test.Error(t, err2).Is(conerr)
 			},
 		},
 	}

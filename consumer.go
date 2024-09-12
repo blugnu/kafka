@@ -25,15 +25,12 @@ type Consumer interface {
 }
 
 type consumer struct {
-	sync.Mutex
 	groupId     string
 	handlers    map[string]Handler
 	readTimeout time.Duration
-	state       consumerState
 	sig         chan os.Signal
 	logsChannel chan kafka.LogEvent
-	stopped     chan error
-	waiting     int
+	waiting     []chan error
 	err         error
 	*kafka.Consumer
 	cypher
@@ -43,6 +40,10 @@ type consumer struct {
 		readMessage   func(time.Duration) (*kafka.Message, error)
 		seek          func(kafka.TopicPartition, int) error
 		subscribe     func(topics []string, rebalanceCb kafka.RebalanceCb) error
+	}
+	state struct {
+		sync.Mutex
+		value consumerState
 	}
 }
 
@@ -73,10 +74,10 @@ var commitOffset = func(ctx context.Context, c *consumer, msg *kafka.Message, re
 		return fmt.Errorf("commit: %w", err)
 	}
 
-	logs.Debug(ctx, "offset committed", LogInfo{
+	logs.Debug(ctx, "offset committed", LogInfo.withOffsetDetails(LogInfo{
 		Consumer: &c.groupId,
-		Offset:   &committed[0],
-	})
+	}, committed[0]),
+	)
 
 	return nil
 }
@@ -119,38 +120,50 @@ func (c *consumer) consume(ctx context.Context) error {
 
 	err = c.handleMessage(ctx, msg)
 	if err == nil || err == ErrReprocessMessage {
+		// the original error is expected to have been logged by the handler
 		if err == ErrReprocessMessage {
-			// the original error is expected to have been logged by the handler
-			logs.Debug(ctx, "message will be reprocessed", LogInfo{
-				Consumer: &c.groupId,
-				Message:  msg,
-			})
+			logs.Debug(ctx, "message will be reprocessed", LogInfo.withOffsetDetails(
+				LogInfo{
+					Consumer: &c.groupId,
+				},
+				msg.TopicPartition),
+			)
 		}
 		if err := commitOffset(ctx, c, msg, err == nil); err != nil {
-			logs.Error(ctx, "commit failed", LogInfo{
-				Consumer: &c.groupId,
-				Message:  msg,
-				Error:    err,
-			})
+			logs.Error(ctx, "commit offset error", LogInfo.withOffsetDetails(
+				LogInfo{
+					Consumer: &c.groupId,
+					Error:    err,
+				},
+				msg.TopicPartition),
+			)
 			return err
 		}
 		return nil
 	}
-
-	logs.Error(ctx, "handler error", LogInfo{
-		Consumer: &c.groupId,
-		Message:  msg,
-		Error:    err,
-	})
-
 	return err
 }
 
-// setState sets the state of the consumer.
-func (c *consumer) setState(state consumerState) {
-	c.Lock()
-	defer c.Unlock()
-	c.state = state
+// getState returns the state of the consumer.
+func (c *consumer) getState() consumerState {
+	c.state.Lock()
+	defer c.state.Unlock()
+	return c.state.value
+}
+
+// lockState locks the state and returns a pointer to the state value
+// for the caller to work with.  The caller must call state.Unlock().
+func (c *consumer) lockState() *consumerState {
+	c.state.Lock()
+	return &c.state.value
+}
+
+// setState updates the state of the consumer and returns the new state.
+func (c *consumer) setState(state consumerState) consumerState {
+	c.state.Lock()
+	defer c.state.Unlock()
+	c.state.value = state
+	return state
 }
 
 // handleMessage identifies the handler for a specified message, decrypts
@@ -166,10 +179,41 @@ func (c *consumer) handleMessage(ctx context.Context, msg *kafka.Message) error 
 	}
 
 	if err := c.decrypt(ctx, msg); err != nil {
-		return handle(fmt.Errorf("decrypt: %w", err))
+		return handle(fmt.Errorf("decrypt message: %w", err))
 	}
 
-	return h.HandleMessage(ctx, msg)
+	// the handler is called in a function that will recover any panic
+	// and log the details before re-panicking; this enables the log
+	// entry to include details of the message being processed at the
+	// time of the panic.
+	//
+	// the re-panic is necessary to ensure the consumer stops processing
+	// messages and terminates in a panic state.
+	err := func() (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				logs.Error(ctx, "handler panic", LogInfo.withMessageDetails(
+					LogInfo{
+						Consumer:  &c.groupId,
+						Recovered: addr(r),
+					}, msg),
+				)
+				panic(r)
+			}
+		}()
+		return h.HandleMessage(ctx, msg)
+	}()
+
+	if err != nil && err != ErrReprocessMessage {
+		logs.Error(ctx, "handler error", LogInfo.withMessageDetails(
+			LogInfo{
+				Consumer: &c.groupId,
+				Error:    err,
+			}, msg),
+		)
+	}
+
+	return err
 }
 
 // readMessage reads the next message from the consumer or returns
@@ -182,6 +226,7 @@ func (c *consumer) readMessage() (*kafka.Message, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return msg, nil
 }
 
@@ -189,14 +234,15 @@ func (c *consumer) readMessage() (*kafka.Message, error) {
 func (c *consumer) run(ctx context.Context) {
 	var err error
 
+	exitLog := logs.Info // will be upgraded to logs.Error if an error occurs
+	logInfo := LogInfo{
+		Consumer: &c.groupId,
+	}
+
 	defer func() {
 		c.cleanup(ctx, err, recover())
 	}()
 
-	exitLog := logs.Info // upgraded to logs.Error if an error occurs
-	logInfo := LogInfo{
-		Consumer: &c.groupId,
-	}
 	c.setState(csRunning)
 	logs.Info(ctx, "waiting for messages", logInfo)
 
@@ -235,20 +281,13 @@ runLoop:
 // The function will never be called with BOTH a non-nil error AND a
 // recovered panic value.
 func (c *consumer) cleanup(ctx context.Context, err error, recovered any) {
-	c.Lock()
-	defer c.Unlock()
-
-	c.state = map[bool]consumerState{
+	state := c.setState(map[bool]consumerState{
 		true:  csPanic,
 		false: csStopped,
-	}[recovered != nil]
+	}[recovered != nil])
 
-	if c.state == csPanic {
-		logs.Error(ctx, "consumer panic", LogInfo{
-			Consumer:  &c.groupId,
-			Recovered: addr(recovered),
-		})
-		err = &ConsumerPanic{Recovered: recovered}
+	if state == csPanic {
+		err = &ConsumerPanicError{Recovered: recovered}
 	}
 
 	if closeErr := c.funcs.close(); closeErr != nil {
@@ -262,12 +301,12 @@ func (c *consumer) cleanup(ctx context.Context, err error, recovered any) {
 	// on the consumer so it may be retrieved by the IsRunning() method
 	c.err = err
 
-	// also send the error to the stopped channel so it may be collected by any
-	// goroutine that may be waiting for the consumer
-	c.stopped <- err
+	for _, ch := range c.waiting {
+		ch <- err
+		close(ch)
+	}
 
 	close(c.sig)
-	close(c.stopped)
 
 	logs.Info(ctx, "consumer stopped", LogInfo{
 		Consumer: &c.groupId,
@@ -279,11 +318,13 @@ func (c *consumer) cleanup(ctx context.Context, err error, recovered any) {
 //
 // If no handlers have been registered, the consumer will return ErrNoHandlersConfigured.
 func (c *consumer) subscribe(ctx context.Context) error {
-	c.Lock()
-	defer c.Unlock()
+	// this function changes the state of the consumer so we acquire a pointer
+	// the state value from lockState to ensure the state is updated correctly
+	state := c.lockState()
+	defer c.state.Unlock()
 
-	if c.state != csReady {
-		return fmt.Errorf("start: %w: current state: %s", ErrInvalidOperation, c.state)
+	if *state != csReady {
+		return fmt.Errorf("start: %w: current state: %s", ErrInvalidOperation, c.state.value)
 	}
 
 	if len(c.handlers) == 0 {
@@ -302,43 +343,12 @@ func (c *consumer) subscribe(ctx context.Context) error {
 
 	if err := c.funcs.subscribe(topics, nil); err != nil {
 		c.err = err
-		c.state = csError
+		*state = csError
 		return fmt.Errorf("start: subscribe: %w", err)
 	}
 
-	c.state = csSubscribed
+	*state = csSubscribed
 	return nil
-}
-
-// Wait blocks until the consumer run loop has stopped.  A consumer
-// may be stopped in response to a SIGINT or SIGTERM signal or as a result of a
-// message handler panicking or returning a kafka.FatalError.
-//
-// There must be only one call to Wait for any consumer, intended to be called
-// by the goroutine that Start()s the consumer.  The first call to Wait will
-// return the error that caused the consumer to stop; any subsequent calls will
-// return ErrInvalidOperation.
-//
-// Wait returns nil immediately if the consumer is nil.
-//
-// If Wait is called on a consumer that has not been started, ErrConsumerNotStarted
-// is returned.
-func (c *consumer) Wait() error {
-	if c == nil {
-		return nil
-	}
-	return func() error {
-		c.Lock()
-		defer c.Unlock()
-
-		if c.waiting++; c.waiting > 1 {
-			return fmt.Errorf("%w: there must be at most ONE Wait() call for a consumer", ErrInvalidOperation)
-		}
-		if c.state < csSubscribed {
-			return ErrConsumerNotStarted
-		}
-		return <-c.stopped
-	}()
 }
 
 // IsRunning returns an error if the consumer is not running.
@@ -350,46 +360,19 @@ func (c *consumer) Wait() error {
 //   - ErrConsumerNotRunning: the consumer has not been started or has
 //     stopped. The error will include the current state of the consumer;
 //
-//   - ErrConsumerError: the consumer has stopped due to an error.
+//   - ErrConsumerError: the consumer has stopped due to an error; this
+//     error is returned wrapped with any error on the consumer itself.
 func (c *consumer) IsRunning() error {
 	if c == nil {
 		return fmt.Errorf("%w: consumer is nil", ErrInvalidOperation)
 	}
 
-	c.Lock()
-	defer c.Unlock()
-
-	if c.state != csRunning {
+	if state := c.getState(); state != csRunning {
 		if c.err != nil {
 			return fmt.Errorf("%w: %w", ErrConsumerError, c.err)
 		}
-		return fmt.Errorf("%w: current state: %s", ErrConsumerNotRunning, c.state)
+		return fmt.Errorf("%w: current state: %s", ErrConsumerNotRunning, c.state.value)
 	}
-	return nil
-}
-
-// Stop stops the consumer, if running.  The consumer will stop processing messages and
-// will return immediately.
-//
-// If the consumer has already stopped Stop returns nil immediately.
-//
-// If the consumer has not been started, Stop will immediately return ErrConsumerNotStarted.
-func (c *consumer) Stop() error {
-	if c == nil {
-		return fmt.Errorf("%w: consumer is nil", ErrInvalidOperation)
-	}
-
-	c.Lock()
-	defer c.Unlock()
-
-	if c.state > csRunning {
-		return nil
-	}
-	if c.state < csRunning {
-		return fmt.Errorf("stop: %w: current state: %s", ErrConsumerNotStarted, c.state)
-	}
-
-	c.sig <- syscall.SIGINT
 	return nil
 }
 
@@ -412,6 +395,88 @@ func (c *consumer) Start(ctx context.Context) error {
 
 	go c.run(ctx)
 	return nil
+}
+
+// Stop signals the consumer to stop processing messages.  Any messages
+// currently being handled will be completed before the consumer stops, which
+// may be after this function has returned.
+//
+// If the consumer has already stopped nil is returned without signalling
+// the consumer to stop again.
+//
+// If the consumer has not been started ErrConsumerNotStarted is returned.
+func (c *consumer) Stop() error {
+	if c == nil {
+		return fmt.Errorf("%w: consumer is nil", ErrInvalidOperation)
+	}
+
+	state := c.getState()
+
+	if state > csRunning {
+		return nil
+	}
+	if state < csRunning {
+		return fmt.Errorf("stop: %w: current state: %s", ErrConsumerNotStarted, c.state.value)
+	}
+
+	c.sig <- syscall.SIGINT
+	return nil
+}
+
+// Wait blocks until the consumer run loop has stopped.  A consumer
+// may be stopped:
+//
+// - in response to a SIGINT or SIGTERM signal;
+// - as a result of a message handler panicking or returning a kafka.FatalError;
+// - as a result of an error in the consumer itself;
+// - as a result of a call to the Stop method.
+//
+// Wait returns nil immediately if the consumer is nil.
+//
+// If Wait is called on a consumer that has not been started, ErrConsumerNotStarted
+// is returned.
+//
+// If Wait is called on a consumer that has already stopped, the error that caused
+// the consumer to stop is returned.
+func (c *consumer) Wait() error {
+	if c == nil {
+		return nil
+	}
+
+	ch := make(chan error, 1)
+	func() {
+		state := c.getState()
+		switch {
+		case state < csSubscribed:
+			// the consumer has not been started; send an appropriate error
+			// to the channel immediately (channel will be closed)
+			ch <- ErrConsumerNotStarted
+
+		case state >= csStopped:
+			// the consumer has already stopped; send any consumer error to
+			// the channel immediately (channel will be closed)
+			ch <- c.err
+
+		default:
+			// the consumer is running; add the channel to the waiting list
+			// and return (leaving the channel open; it will be closed by the
+			// consumer when the consumer stops)
+			c.waiting = append(c.waiting, ch)
+			return
+		}
+
+		// if we reach this point we have already sent any relevant error to
+		// the channel and do not need to leave it open
+		close(ch)
+	}()
+
+	// if the channel was closed above, the function will immediately return
+	// with the error that was sent to the channel
+	//
+	// if the channel was added to the waiting list, the function will block
+	// until the channel is closed by the consumer (when the consumer stops)
+	// and then return any erro that caused the consumer to stop (or nil)
+	return <-ch
 }
 
 func (c *consumer) configure(cfg *Config, opts ...ConsumerOption) error {
@@ -492,8 +557,7 @@ func NewConsumer(config *Config, opts ...ConsumerOption) (Consumer, error) {
 	consumer.sig = make(chan os.Signal, 1)
 	signal.Notify(consumer.sig, syscall.SIGINT, syscall.SIGTERM)
 
-	consumer.stopped = make(chan error, 1)
-	consumer.state = csReady // no need to protect this access to state since at this point there is no other ref to the consumer
+	consumer.setState(csReady)
 
 	return consumer, nil
 }
