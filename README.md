@@ -106,14 +106,31 @@ To avoid importing a specific logging library or imposing a log format on applic
 logs are written using internal log hooks.  These are set to no-op by default.
 
 To enable logging you must call the `kafka.EnableLogs` function, providing functions
-to log entries at different levels as required.
+to log entries at different levels as required.  The levels supported are those at which
+Kafka logs messages: `DEBUG`, `INFO` and `ERROR`.
+
+The logging function at each level is passed a `context.Context`, the log message, and
+a `kafka.LogInfo` struct containing additional information about the log entry.
 
 For example, the following might be used to initialise a `blugnu/ulog` context logger
-and enable logging of `INFO` level Kafka logs to that logger; logs at all other levels
+and enable logging of `ERROR` level Kafka logs to that logger; logs at all other levels
 are left as no-ops:
 
 ```go
 func logger(ctx context.Context) (context.Context, ulog.Logger, func()) {
+    kafka.EnableLogs(&kafka.Loggers{
+        Error: func(ctx context.Context, msg string, info: kafka.LogInfo) {
+            log := ulog.FromContext(ctx)
+            if info.Consumer != nil {
+                log = log.WithField("consumer", *info.Consumer)
+            }
+            if info.Topic != nil {
+                log = log.WithField("topic", *info.Topic)
+            }
+            log.Error(msg)
+        },
+    })
+
     log, cfn, err := ulog.NewLogger(
         ulog.WithLevel(ulog.DebugLevel),
     )
@@ -121,27 +138,14 @@ func logger(ctx context.Context) (context.Context, ulog.Logger, func()) {
         log.Fatal(fmt.Errorf("error initialising logger: %v", err))
     }
 
-    kafka.EnableLogs(&kafka.Loggers{
-        Info: func(ctx context.Context, msg string, fields map[string]interface{}) {
-            log := ulog.FromContext(ctx)
-            log.Info(msg, ulog.Fields(fields))
-        },
-    })
-
     return ulog.ContextWithLogger(ctx, log), log, cfn
 }
 ```
 
-Logging functions are provided for each of the following levels:
-
-- `Debug`
-- `Info`
-- `Error`
-
 ## Default Logging
 
 A `nil` argument may be passed to `EnableLogs` to enable default logging, which will
-write logs using the standard `log` package.
+write simple text logs using the standard `log` package.
 
 Default logging is also emitted if a zero-value `&Loggers{}` is passed to `EnableLogs`, i.e.
 all functions set `nil`.

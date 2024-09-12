@@ -11,29 +11,56 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
+func TestFromMessage(t *testing.T) {
+	// ARRANGE
+	msg := &kafka.Message{
+		Key: []byte("key-value"),
+		Headers: []kafka.Header{
+			{Key: "key1", Value: []byte("value1")},
+			{Key: "key2", Value: []byte("value2")},
+		},
+		TopicPartition: kafka.TopicPartition{
+			Topic:     addr("topic"),
+			Partition: 1,
+			Offset:    2,
+		},
+		Value:     []byte("value"),
+		Timestamp: time.Date(2010, 9, 8, 7, 6, 5, 0, time.UTC),
+	}
+
+	// ACT
+	result := LogInfo.withMessageDetails(LogInfo{}, msg)
+
+	// ASSERT
+	test.That(t, result).Equals(LogInfo{
+		Topic:     addr("topic"),
+		Partition: addr(int32(1)),
+		Offset:    addr(kafka.Offset(2)),
+		Key:       []byte("key-value"),
+		Headers: map[string][]byte{
+			"key1": []byte("value1"),
+			"key2": []byte("value2"),
+		},
+		Timestamp: addr(time.Date(2010, 9, 8, 7, 6, 5, 0, time.UTC)),
+	})
+}
+
 func TestLogInfoAsString(t *testing.T) {
 	// ARRANGE
 	info := LogInfo{
-		Consumer: addr("group"),
-		Offset:   &kafka.TopicPartition{Topic: addr("topic"), Partition: 1, Offset: 2},
-		Message: &kafka.Message{
-			Key: []byte("key-value"),
-			Headers: []kafka.Header{
-				{Key: "key1", Value: []byte("value1")},
-				{Key: "key2", Value: []byte("value2")},
-			},
-			TopicPartition: kafka.TopicPartition{
-				Topic:     addr("topic"),
-				Partition: 1,
-				Offset:    2,
-			},
-			Value:     []byte("value"),
-			Timestamp: time.Date(2010, 9, 8, 7, 6, 5, 0, time.UTC),
+		Consumer:  addr("group"),
+		Topic:     addr("topic"),
+		Partition: addr(int32(1)),
+		Offset:    addr(kafka.Offset(2)),
+		Key:       []byte("key-value"),
+		Headers: map[string][]byte{
+			"key1": []byte("value1"),
+			"key2": []byte("value2"),
 		},
+		Timestamp: addr(time.Date(2010, 9, 8, 7, 6, 5, 0, time.UTC)),
 		Error:     fmt.Errorf("error"),
 		Reason:    addr("reason"),
 		Recovered: addr(any("recovered")),
-		Topic:     addr("topic"),
 		Topics:    &[]string{"topic1", "topic2"},
 	}
 
@@ -41,7 +68,7 @@ func TestLogInfoAsString(t *testing.T) {
 	result := info.String()
 
 	// ASSERT
-	expected := "consumer=group offset=topic/1:2 message={offset=topic/1:2 key=[key-value] headers={key1:[value1] key2:[value2]} timestamp=2010-09-08T07:06:05Z} error=\"error\" reason=reason recovered=\"recovered\" topic=topic topics=[topic1 topic2]"
+	expected := "consumer=group error=\"error\" headers={key1:[value1], key2:[value2]} key=[key-value] offset=2 partition=1 reason=\"reason\" recovered=\"recovered\" timestamp=2010-09-08T07:06:05Z topic=topic topics=[topic1, topic2]"
 	test.That(t, result).Equals(expected)
 }
 

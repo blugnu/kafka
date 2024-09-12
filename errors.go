@@ -43,20 +43,24 @@ func (e ConfigurationError) Is(target error) bool {
 // Unwrap returns the wrapped error
 func (e ConfigurationError) Unwrap() error { return e.error }
 
-// ConsumerPanic is an error that indicates a consumer panic
-type ConsumerPanic struct{ Recovered any }
+// ConsumerPanicError is an error that indicates a consumer panic
+type ConsumerPanicError struct {
+	Recovered any
+}
 
 // Error implements the error interface for a ConsumerPanicError
-func (e ConsumerPanic) Error() string { return fmt.Sprintf("consumer: panic: %v", e.Recovered) }
+func (e ConsumerPanicError) Error() string {
+	return fmt.Sprintf("consumer panic: recovered: %v", e.Recovered)
+}
 
 // Is determines whether the error matches some target.  The target
 // is a match if it is a ConsumerPanicError and:
 //
 //   - has a nil Recovered, or
-//   - has the same Recovered
-func (e ConsumerPanic) Is(target error) bool {
-	if target, ok := target.(ConsumerPanic); ok {
-		return target.Recovered == nil || target.Recovered == e.Recovered
+//   - has a non-nil Recovered which equals the target.Recovered
+func (e ConsumerPanicError) Is(target error) bool {
+	if target, ok := target.(ConsumerPanicError); ok {
+		return (target.Recovered == nil || target.Recovered == e.Recovered)
 	}
 	return false
 }

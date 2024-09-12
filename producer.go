@@ -38,8 +38,8 @@ type producer struct {
 	}
 }
 
-// deliveryEvent takes a delivery event and returns the message
-// and error if any.
+// deliveryEvent takes a delivery event and returns the delivered offset
+// of the message if successfully delivered (or nil) and any error.
 //
 // If the event is not a message or error, an UnexpectedDeliveryEvent
 // error is returned.
@@ -184,7 +184,10 @@ func (p *producer) MustProduce(ctx context.Context, msg Message) (*TopicPartitio
 		}
 		p.err = nil
 
-		logs.Info(ctx, "message produced", LogInfo{Topic: tp.Topic})
+		logs.Info(ctx, "message produced", LogInfo.
+			withMessageDetails(LogInfo{}, &msg).
+			withOffsetDetails(*tp),
+		)
 		return tp, nil
 	}
 }

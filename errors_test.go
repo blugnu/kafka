@@ -105,17 +105,28 @@ func TestConsumerPanicError(t *testing.T) {
 		scenario string
 		exec     func(t *testing.T)
 	}{
-		{scenario: "Error",
+		{scenario: "Error (zero-value)",
 			exec: func(t *testing.T) {
 				// ARRANGE
-				recovered := "recovered"
-				sut := ConsumerPanic{recovered}
+				sut := ConsumerPanicError{}
 
 				// ACT
 				result := sut.Error()
 
 				// ASSERT
-				test.That(t, result).Equals("consumer: panic: recovered")
+				test.That(t, result).Equals("consumer panic: recovered: <nil>")
+			},
+		},
+		{scenario: "Error",
+			exec: func(t *testing.T) {
+				// ARRANGE
+				sut := ConsumerPanicError{Recovered: "recovered value"}
+
+				// ACT
+				result := sut.Error()
+
+				// ASSERT
+				test.That(t, result).Equals("consumer panic: recovered: recovered value")
 			},
 		},
 		{scenario: "Is",
@@ -123,29 +134,29 @@ func TestConsumerPanicError(t *testing.T) {
 				// ARRANGE
 				testcases := []struct {
 					scenario string
-					sut      ConsumerPanic
+					sut      ConsumerPanicError
 					target   error
 					result   bool
 				}{
-					{scenario: "target recovered not nil/equal",
-						sut:    ConsumerPanic{"recovered"},
-						target: ConsumerPanic{"recovered"},
-						result: true,
-					},
-					{scenario: "target recovered not nil/not equal",
-						sut:    ConsumerPanic{"recovered"},
-						target: ConsumerPanic{"something else"},
-						result: false,
-					},
-					{scenario: "target recovered is nil",
-						sut:    ConsumerPanic{"recovered"},
-						target: ConsumerPanic{},
-						result: true,
-					},
-					{scenario: "target not ConsumerPanicError",
-						sut:    ConsumerPanic{"recovered"},
+					{scenario: "target not a ConsumerPanicError",
+						sut:    ConsumerPanicError{Recovered: "recovered value"},
 						target: errors.New("other error"),
 						result: false,
+					},
+					{scenario: "recovered, expecting recovered",
+						sut:    ConsumerPanicError{Recovered: "recovered value"},
+						target: ConsumerPanicError{Recovered: "recovered value"},
+						result: true,
+					},
+					{scenario: "recovered, expecting other recovered",
+						sut:    ConsumerPanicError{Recovered: "recovered value"},
+						target: ConsumerPanicError{Recovered: "something else"},
+						result: false,
+					},
+					{scenario: "recovered, expecting any ConsumerPanicError",
+						sut:    ConsumerPanicError{Recovered: "recovered value"},
+						target: ConsumerPanicError{},
+						result: true,
 					},
 				}
 				for _, tc := range testcases {
