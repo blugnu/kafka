@@ -15,14 +15,19 @@ var createProducer = kafka.NewProducer
 
 type Producer interface {
 	Err() error
-	MustProduce(context.Context, kafka.Message) (*TopicPartition, error)
+	MustProduce(ctx context.Context, msg kafka.Message) (*TopicPartition, error)
 }
 
 type MockProducer[T comparable] interface {
-	Expect(T) *mock.Expectation
+	Expect(topic T) *mock.Expectation
 	ExpectationsWereMet() error
 	Reset()
 }
+
+const (
+	defaultMaxRetries        = 2
+	defaultDeliveryTimeoutMS = 5000 // in milliseconds
+)
 
 type producer struct {
 	sync.Mutex
@@ -38,6 +43,46 @@ type producer struct {
 	}
 }
 
+// NewProducer creates a new Producer with the given configuration and options.
+func NewProducer(ctx context.Context, config *Config, opts ...ProducerOption) (Producer, error) {
+	config = config.clone()
+
+	p := &producer{
+		maxRetries: defaultMaxRetries,
+	}
+	if err := p.configure(config, opts...); err != nil {
+		return nil, fmt.Errorf("kafka.NewProducer: %w", err)
+	}
+
+	var err error
+	p.Producer, err = createProducer(&config.config)
+	if err != nil {
+		return nil, fmt.Errorf("kafka.NewProducer: %w", err)
+	}
+
+	p.funcs.produce = p.Producer.Produce
+
+	p.logsChannel = p.Producer.Logs()
+	go func() {
+		for {
+			if _, ok := <-p.logsChannel; !ok {
+				p.logsChannel = nil
+				return
+			}
+		}
+	}()
+
+	return p, nil
+}
+
+// NewMockProducer creates a new mock producer that can be used in tests.  The function
+// returns a Producer interface to be injected into dependents that require a Producer,
+// and a MockProducer interface, used by a test to set and test expectations.
+func NewMockProducer[T comparable](ctx context.Context) (Producer, MockProducer[T]) {
+	p := &mock.Producer[T]{}
+	return p, p
+}
+
 // deliveryEvent takes a delivery event and returns the delivered offset
 // of the message if successfully delivered (or nil) and any error.
 //
@@ -51,50 +96,6 @@ var deliveryEvent = func(ev kafka.Event) (*kafka.TopicPartition, error) {
 		return nil, ev
 	}
 	return nil, UnexpectedDeliveryEvent{ev}
-}
-
-func (p *producer) configure(config *Config, opts ...ProducerOption) error {
-	handle := func(err error) error {
-		return fmt.Errorf("configure: %w", err)
-	}
-
-	// default configuration which may be overridden
-	if err := config.setKey("delivery.timeout.ms", 5000); err != nil {
-		return handle(ConfigurationError{err})
-	}
-
-	errs := []error{}
-	for _, opt := range opts {
-		if err := opt(config, p); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if err := errors.Join(errs...); err != nil {
-		return handle(ConfigurationError{err})
-	}
-
-	// ensure that required configuration is applied, potentially
-	// overriding any user-provided configuration
-	if err := config.setKey("enable.idempotence", true); err != nil {
-		return handle(ConfigurationError{err})
-	}
-	if err := config.setKey("go.logs.channel.enable", true); err != nil {
-		return handle(ConfigurationError{err})
-	}
-
-	// if no cypher is configured use the noEncryption NO-OP cypher
-	if p.cypher = config.cypher; p.encrypt == nil {
-		p.cypher = noEncryption
-	}
-
-	if p.funcs.prepareMessage == nil {
-		p.funcs.prepareMessage = func(context.Context, *Message) error { return nil }
-	}
-	if p.funcs.checkDelivery == nil {
-		p.funcs.checkDelivery = func(context.Context, *Message, error) { /* NO-OP */ }
-	}
-
-	return nil
 }
 
 // Err returns the last error that occurred when producing a message.  If no error
@@ -170,7 +171,7 @@ func (p *producer) MustProduce(ctx context.Context, msg Message) (*TopicPartitio
 			}
 
 			tp, err = deliveryEvent(<-dc)
-			if err, ok := err.(kafka.Error); ok && err.Code() == kafka.ErrMsgTimedOut {
+			if IsKafkaError(err, kafka.ErrMsgTimedOut) {
 				if retry++; retry > p.maxRetries {
 					return nil, ErrTimeout
 				}
@@ -192,38 +193,46 @@ func (p *producer) MustProduce(ctx context.Context, msg Message) (*TopicPartitio
 	}
 }
 
-func NewMockProducer[T comparable](ctx context.Context) (Producer, MockProducer[T]) {
-	p := &mock.Producer[T]{}
-	return p, p
-}
-
-func NewProducer(ctx context.Context, config *Config, opts ...ProducerOption) (Producer, error) {
-	config = config.clone()
-
-	p := &producer{
-		maxRetries: 2,
-	}
-	if err := p.configure(config, opts...); err != nil {
-		return nil, fmt.Errorf("kafka.NewProducer: %w", err)
+func (p *producer) configure(config *Config, opts ...ProducerOption) error {
+	handle := func(err error) error {
+		return fmt.Errorf("configure: %w", err)
 	}
 
-	var err error
-	p.Producer, err = createProducer(&config.config)
-	if err != nil {
-		return nil, fmt.Errorf("kafka.NewProducer: %w", err)
+	// default configuration which may be overridden
+	if err := config.setKey("delivery.timeout.ms", defaultDeliveryTimeoutMS); err != nil {
+		return handle(ConfigurationError{err})
 	}
 
-	p.funcs.produce = p.Producer.Produce
-
-	p.logsChannel = p.Producer.Logs()
-	go func() {
-		for {
-			if _, ok := <-p.logsChannel; !ok {
-				p.logsChannel = nil
-				return
-			}
+	errs := []error{}
+	for _, opt := range opts {
+		if err := opt(config, p); err != nil {
+			errs = append(errs, err)
 		}
-	}()
+	}
+	if err := errors.Join(errs...); err != nil {
+		return handle(ConfigurationError{err})
+	}
 
-	return p, nil
+	// ensure that required configuration is applied, potentially
+	// overriding any user-provided configuration
+	if err := config.setKey("enable.idempotence", true); err != nil {
+		return handle(ConfigurationError{err})
+	}
+	if err := config.setKey("go.logs.channel.enable", true); err != nil {
+		return handle(ConfigurationError{err})
+	}
+
+	// if no cypher is configured use the noEncryption NO-OP cypher
+	if p.cypher = config.cypher; p.encrypt == nil {
+		p.cypher = noEncryption
+	}
+
+	if p.funcs.prepareMessage == nil {
+		p.funcs.prepareMessage = func(context.Context, *Message) error { return nil }
+	}
+	if p.funcs.checkDelivery == nil {
+		p.funcs.checkDelivery = func(context.Context, *Message, error) { /* NO-OP */ }
+	}
+
+	return nil
 }

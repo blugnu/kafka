@@ -67,7 +67,7 @@ func (e ConsumerPanicError) Is(target error) bool {
 
 // UnexpectedDeliveryEvent is an error returned when a delivery event
 // was not of an expected type (Message or Event)
-type UnexpectedDeliveryEvent struct {
+type UnexpectedDeliveryEvent struct { //nolint: errname // this follows the pattern of a confluent kafka event that *may* be an error (i.e. not an idiomatic Go error type)
 	event kafka.Event
 }
 
@@ -84,6 +84,16 @@ func (err UnexpectedDeliveryEvent) Error() string {
 func (err UnexpectedDeliveryEvent) Is(target error) bool {
 	if target, ok := target.(UnexpectedDeliveryEvent); ok {
 		return target.event == nil || target.event == err.event
+	}
+	return false
+}
+
+// IsKafkaError checks whether the error is a kafka.Error and has the specified code.
+// It returns true if the error is a kafka.Error and its code matches the provided code.
+func IsKafkaError(err error, code kafka.ErrorCode) bool {
+	var kerr kafka.Error
+	if ok := errors.As(err, &kerr); ok {
+		return kerr.Code() == code
 	}
 	return false
 }

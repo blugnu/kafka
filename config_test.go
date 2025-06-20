@@ -1,4 +1,4 @@
-package kafka
+package kafka //nolint: testpackage // testing private types and functions
 
 import (
 	"context"

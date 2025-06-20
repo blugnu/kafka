@@ -1,4 +1,4 @@
-package kafka
+package kafka //nolint: testpackage // testing private types and functions
 
 import (
 	"context"
@@ -481,12 +481,17 @@ func TestProducerLogsChannelGoRoutineTerminatesWhenChannelIsClosed(t *testing.T)
 	defer func() { createProducer = og }()
 	createProducer = func(cfg *kafka.ConfigMap) (*kafka.Producer, error) { return &kafka.Producer{}, nil }
 
-	// ACT
 	con, err := NewProducer(ctx, cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	producer := con.(*producer)
+
+	producer, ok := con.(*producer)
+	if !ok {
+		t.Fatalf("expected *producer, got %T", con)
+	}
+
+	// ACT
 	producer.logsChannel = make(chan kafka.LogEvent)
 	func() {
 		ctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)

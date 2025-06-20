@@ -14,10 +14,10 @@ func msginfo(msg *kafka.Message) string {
 
 	const none = "<none>"
 	var (
-		t string = none
-		k string = none
-		h string = none
-		v string = none
+		t = none
+		k = none
+		h = none
+		v = none
 	)
 	if msg.TopicPartition.Topic != nil {
 		t = fmt.Sprintf("%q", *msg.TopicPartition.Topic)

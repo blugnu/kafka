@@ -1,7 +1,6 @@
-package mock
+package mock //nolint: testpackage // testing a private function
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
@@ -12,18 +11,19 @@ func TestMsgInfo(t *testing.T) {
 	topic := "topic.id"
 
 	testcases := []struct {
+		name   string
 		msg    *kafka.Message
 		result string
 	}{
-		{
+		{name: "nil",
 			msg:    nil,
 			result: "<no message>",
 		},
-		{
+		{name: "empty message",
 			msg:    &kafka.Message{},
 			result: "topic=<none>, key=<none>, headers=<none>, value=<none>",
 		},
-		{
+		{name: "message with topic, key and value",
 			msg: &kafka.Message{
 				TopicPartition: kafka.TopicPartition{
 					Topic: &topic,
@@ -33,7 +33,7 @@ func TestMsgInfo(t *testing.T) {
 			},
 			result: "topic=\"topic.id\", key=\"key\", headers=<none>, value=\"value\"",
 		},
-		{
+		{name: "message with headers",
 			msg: &kafka.Message{
 				Headers: []kafka.Header{
 					{Key: "key", Value: []byte("value")},
@@ -42,8 +42,8 @@ func TestMsgInfo(t *testing.T) {
 			result: "topic=<none>, key=<none>, headers=[{\"key\": \"value\"}], value=<none>",
 		},
 	}
-	for tn, tc := range testcases {
-		t.Run(fmt.Sprintf("%d", tn+1), func(t *testing.T) {
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
 			// ACT
 			got := msginfo(tc.msg)
 

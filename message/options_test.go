@@ -1,12 +1,21 @@
-package message
+package message_test
 
 import (
 	"errors"
 	"testing"
 
+	"github.com/blugnu/kafka/message"
 	"github.com/blugnu/test"
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
+
+var errUnmarshallable = errors.New("unmarshallable")
+
+type unmarshallable struct{}
+
+func (u unmarshallable) MarshalJSON() ([]byte, error) {
+	return nil, errUnmarshallable
+}
 
 func TestOptions(t *testing.T) {
 	// ARRANGE
@@ -31,7 +40,7 @@ func TestOptions(t *testing.T) {
 				}
 
 				// ACT
-				err := Copy(src)(msg)
+				err := message.Copy(src)(msg)
 
 				// ASSERT
 				test.That(t, err).IsNil()
@@ -53,10 +62,10 @@ func TestOptions(t *testing.T) {
 				}
 
 				// ACT
-				err := Header("existing", "replaced-value")(msg)
+				err := message.Header("existing", "replaced-value")(msg)
 				test.That(t, err).IsNil()
 
-				err = Header("new", "new-value")(msg)
+				err = message.Header("new", "new-value")(msg)
 				test.That(t, err).IsNil()
 
 				// ASSERT
@@ -78,7 +87,7 @@ func TestOptions(t *testing.T) {
 				}
 
 				// ACT
-				err := Headers(map[string]string{
+				err := message.Headers(map[string]string{
 					"existing": "replaced-value",
 					"new":      "new-value",
 				})(msg)
@@ -102,7 +111,7 @@ func TestOptions(t *testing.T) {
 				}{ID: 123, Name: "John"}
 
 				// ACT
-				err := JSON(payload)(msg)
+				err := message.JSON(payload)(msg)
 
 				// ASSERT
 				test.That(t, err).IsNil()
@@ -112,16 +121,14 @@ func TestOptions(t *testing.T) {
 		{scenario: "JSON/failed",
 			exec: func(t *testing.T) {
 				// ARRANGE
-				jsonerr := errors.New("json error")
 				msg := &kafka.Message{}
-				payload := func() {}
-				defer test.Using(&jsonMarshal, func(any) ([]byte, error) { return nil, jsonerr })()
+				payload := unmarshallable{}
 
 				// ACT
-				err := JSON(payload)(msg)
+				err := message.JSON(payload)(msg)
 
 				// ASSERT
-				test.Error(t, err).Is(jsonerr)
+				test.Error(t, err).Is(errUnmarshallable)
 			},
 		},
 		{scenario: "Key",
@@ -130,7 +137,7 @@ func TestOptions(t *testing.T) {
 				msg := &kafka.Message{}
 
 				// ACT
-				err := Key("key")(msg)
+				err := message.Key("key")(msg)
 
 				// ASSERT
 				test.That(t, err).IsNil()
@@ -143,7 +150,7 @@ func TestOptions(t *testing.T) {
 				msg := &kafka.Message{}
 
 				// ACT
-				err := Partition(1)(msg)
+				err := message.Partition(1)(msg)
 
 				// ASSERT
 				test.That(t, err).IsNil()
@@ -156,7 +163,7 @@ func TestOptions(t *testing.T) {
 				msg := &kafka.Message{}
 
 				// ACT
-				err := String("string")(msg)
+				err := message.String("string")(msg)
 
 				// ASSERT
 				test.That(t, err).IsNil()
@@ -169,7 +176,7 @@ func TestOptions(t *testing.T) {
 				msg := &kafka.Message{}
 
 				// ACT
-				err := Topic("topic")(msg)
+				err := message.Topic("topic")(msg)
 
 				// ASSERT
 				test.That(t, err).IsNil()
@@ -182,7 +189,7 @@ func TestOptions(t *testing.T) {
 				msg := &kafka.Message{}
 
 				// ACT
-				err := Value([]byte("bytes"))(msg)
+				err := message.Value([]byte("bytes"))(msg)
 
 				// ASSERT
 				test.That(t, err).IsNil()

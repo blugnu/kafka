@@ -18,6 +18,20 @@ type Config struct {
 	cypher
 }
 
+// NewConfig creates a new Config and applies the specified options.
+func NewConfig(opts ...ConfigOption) (*Config, error) {
+	cfg := &Config{
+		config: kafka.ConfigMap{},
+	}
+	for _, opt := range opts {
+		if err := opt(cfg); err != nil {
+			return nil, fmt.Errorf("kafka.NewConfig: %w", err)
+		}
+	}
+
+	return cfg, nil
+}
+
 // clone returns a deep copy of the Config.
 func (cfg *Config) clone() *Config {
 	return &Config{
@@ -151,18 +165,4 @@ func SSLCALocation(filepath string) ConfigOption {
 	return func(cfg *Config) error {
 		return cfg.setKey("ssl.ca.location", filepath)
 	}
-}
-
-// NewConfig creates a new Config and applies the specified options.
-func NewConfig(opts ...ConfigOption) (*Config, error) {
-	cfg := &Config{
-		config: kafka.ConfigMap{},
-	}
-	for _, opt := range opts {
-		if err := opt(cfg); err != nil {
-			return nil, fmt.Errorf("kafka.NewConfig: %w", err)
-		}
-	}
-
-	return cfg, nil
 }

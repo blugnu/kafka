@@ -1,8 +1,8 @@
-package kafka
+package kafka //nolint: testpackage // testing private members and methods
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"log"
 	"testing"
 	"time"
@@ -10,6 +10,16 @@ import (
 	"github.com/blugnu/test"
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
+
+func TestLogFieldsBuilder_add(t *testing.T) {
+	// ARRANGE
+	builder := logfieldsBuilder{map[string]string{}}
+	unsupported := 1.0
+	defer test.ExpectPanic(ErrInvalidOperation).Assert(t)
+
+	// ACT
+	builder.add("key", unsupported)
+}
 
 func TestFromMessage(t *testing.T) {
 	// ARRANGE
@@ -58,7 +68,7 @@ func TestLogInfoAsString(t *testing.T) {
 			"key2": []byte("value2"),
 		},
 		Timestamp: addr(time.Date(2010, 9, 8, 7, 6, 5, 0, time.UTC)),
-		Error:     fmt.Errorf("error"),
+		Error:     errors.New("error"),
 		Reason:    addr("reason"),
 		Recovered: addr(any("recovered")),
 		Topics:    &[]string{"topic1", "topic2"},

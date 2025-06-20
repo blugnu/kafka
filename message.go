@@ -9,6 +9,7 @@ import (
 
 var jsonUnmarshal = json.Unmarshal
 
+// MessageOption is a function type that applies an option to a Message.
 type MessageOption func(*Message) error
 
 // CreateMessage creates a new message with the specified topic and options. Any error

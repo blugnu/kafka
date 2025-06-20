@@ -1,4 +1,4 @@
-package kafka
+package kafka //nolint: testpackage // testing private types and functions
 
 import (
 	"context"
@@ -37,8 +37,8 @@ func TestConsumer_cleanup(t *testing.T) {
 		{scenario: "no error, no panic",
 			exec: func(t *testing.T) {
 				// ARRANGE
+				var waitersNotified bool
 				ctx := context.Background()
-				waitersNotified := false
 				sut := &consumer{
 					Consumer: &kafka.Consumer{},
 					sig:      make(chan os.Signal, 1),
@@ -65,8 +65,8 @@ func TestConsumer_cleanup(t *testing.T) {
 		{scenario: "error, no panic",
 			exec: func(t *testing.T) {
 				// ARRANGE
+				var waitersNotified bool
 				ctx := context.Background()
-				waitersNotified := false
 				sut := &consumer{
 					Consumer: &kafka.Consumer{},
 					sig:      make(chan os.Signal, 1),
@@ -93,8 +93,8 @@ func TestConsumer_cleanup(t *testing.T) {
 		{scenario: "no error, panic",
 			exec: func(t *testing.T) {
 				// ARRANGE
+				var waitersNotified bool
 				ctx := context.Background()
-				waitersNotified := false
 				sut := &consumer{
 					Consumer: &kafka.Consumer{},
 					sig:      make(chan os.Signal, 1),
@@ -1073,7 +1073,7 @@ func TestConsumerLogsChannelGoRoutineTerminatesWhenChannelIsClosed(t *testing.T)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	consumer := con.(*consumer)
+	consumer, _ := con.(*consumer)
 	consumer.logsChannel = make(chan kafka.LogEvent)
 	func() {
 		ctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)

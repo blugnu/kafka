@@ -27,7 +27,7 @@ func Copy(src *kafka.Message) func(*kafka.Message) error {
 func Header(k, v string) func(*kafka.Message) error {
 	return func(msg *kafka.Message) error {
 		for i, h := range msg.Headers {
-			if string(h.Key) == k {
+			if h.Key == k {
 				msg.Headers[i] = kafka.Header{Key: k, Value: []byte(v)}
 				return nil
 			}

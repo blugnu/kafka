@@ -63,109 +63,6 @@ type LogInfo struct {
 	Reason *string `json:"reason,omitempty"`
 }
 
-// fields returns a map of the fields in the LogInfo.  This method is used
-// by unit tests when rendering the LogInfo as a string and emitting field
-// values to a mocked logger.
-func (info LogInfo) fields() map[string]string {
-	result := map[string]string{}
-
-	add := func(name string, value any, fn func(any) string) {
-		if value == nil || reflect.ValueOf(value).IsZero() {
-			return
-		}
-		switch ptr := value.(type) {
-		case *any:
-			value = *ptr
-		case *int32:
-			value = *ptr
-		case *kafka.Offset:
-			value = *ptr
-		case *string:
-			value = *ptr
-		case *time.Time:
-			value = *ptr
-		}
-		result[name] = fn(value)
-	}
-
-	add("consumer", info.Consumer, func(a any) string { return a.(string) })
-	add("topic", info.Topic, func(a any) string { return a.(string) })
-	add("partition", info.Partition, func(a any) string { i, _ := a.(int32); return strconv.Itoa(int(i)) })
-	add("offset", info.Offset, func(a any) string { return a.(kafka.Offset).String() })
-	add("key", info.Key, func(a any) string { b, _ := a.([]byte); return "[" + string(b) + "]" })
-	if len(info.Headers) > 0 {
-		headers := map[string]string{}
-		for k, v := range info.Headers {
-			headers[k] = string(v)
-		}
-		result["headers"] = fmt.Sprintf("%v", headers)
-	}
-	add("timestamp", info.Timestamp, func(a any) string { return a.(time.Time).Format(time.RFC3339) })
-	add("error", info.Error, func(a any) string { return a.(error).Error() })
-	add("reason", info.Reason, func(a any) string { return a.(string) })
-	add("recovered", info.Recovered, func(a any) string { return fmt.Sprintf("%v", a) })
-	if info.Topics != nil {
-		result["topics"] = fmt.Sprintf("%v", *info.Topics)
-	}
-
-	return result
-}
-
-// withMessageDetails returns a copy of the receiver with the topic,
-// partition, offset, key, headers and timestamp set to those of the
-// provided message.
-//
-// The function uses withOffsetDetails to initialize Topic, Partition
-// and Offset information.  Therefore, calling this function will also
-// set the Topics field to nil even if the message TopicPartition is
-// zero-value.
-func (info LogInfo) withMessageDetails(msg *kafka.Message) LogInfo {
-	info = LogInfo.withOffsetDetails(info, msg.TopicPartition)
-
-	info.Key = msg.Key
-
-	// headers are transformed into a map so that the LogInfo
-	// can be rendered as JSON using the standard encoding/json
-	// package if desired
-	if len(msg.Headers) > 0 {
-		info.Headers = make(map[string][]byte)
-		for _, header := range msg.Headers {
-			info.Headers[header.Key] = header.Value
-		}
-	}
-
-	// only set the timestamp if it is not the zero value to prevent a
-	// zero value rendered if the LogInfo is marshalled to JSON
-	if !msg.Timestamp.IsZero() {
-		info.Timestamp = &msg.Timestamp
-	}
-
-	return info
-}
-
-// withOffsetDetails returns a copy of the receiver with the topic, partition
-// and offset set to those of the provided topic partition.
-//
-// If the provided topic partition is a zero value, the topic, partition
-// and offset fields are set to nil.
-//
-// Calling this method will set the Topics field to nil (even if the provided
-// topic partition is a zero value).
-func (info LogInfo) withOffsetDetails(tp kafka.TopicPartition) LogInfo {
-	switch {
-	case tp == kafka.TopicPartition{}:
-		info.Topic = nil
-		info.Partition = nil
-		info.Offset = nil
-	default:
-		info.Topic = tp.Topic
-		info.Partition = &tp.Partition
-		info.Offset = &tp.Offset
-	}
-	info.Topics = nil
-	return info
-}
-
 // String implements the fmt.Stringer interface and returns a string
 // representation of the LogInfo.  This implementation is provided
 // for convenience (primarily in unit test output) and is not intended
@@ -235,6 +132,121 @@ func (info LogInfo) String() string {
 	}
 
 	return strings.Join(e, " ")
+}
+
+type logfieldsBuilder struct {
+	fields map[string]string
+}
+
+func (b *logfieldsBuilder) add(name string, value any) { //nolint: cyclop // type switch is straightforward
+	if value == nil || reflect.ValueOf(value).IsZero() {
+		return
+	}
+
+	switch v := value.(type) {
+	case []byte:
+		b.fields[name] = "[" + string(v) + "]"
+	case error:
+		b.fields[name] = v.Error()
+	case *any:
+		b.fields[name] = fmt.Sprintf("%v", *v)
+	case *int32:
+		b.fields[name] = strconv.Itoa(int(*v))
+	case *kafka.Offset:
+		b.fields[name] = v.String()
+	case *string:
+		b.fields[name] = *v
+	case *time.Time:
+		b.fields[name] = v.Format(time.RFC3339)
+	default:
+		panic(fmt.Errorf("%w: values of type %T are not supported as field values", ErrInvalidOperation, value))
+	}
+}
+
+// fields returns a map of the fields in the LogInfo.  This method is used
+// by unit tests when rendering the LogInfo as a string and emitting field
+// values to a mocked logger.
+func (info LogInfo) fields() map[string]string {
+	result := logfieldsBuilder{
+		fields: make(map[string]string),
+	}
+
+	result.add("consumer", info.Consumer)
+	result.add("topic", info.Topic)
+	result.add("partition", info.Partition)
+	result.add("offset", info.Offset)
+	result.add("key", info.Key)
+	if len(info.Headers) > 0 {
+		headers := map[string]string{}
+		for k, v := range info.Headers {
+			headers[k] = string(v)
+		}
+		result.fields["headers"] = fmt.Sprintf("%v", headers)
+	}
+	result.add("timestamp", info.Timestamp)
+	result.add("error", info.Error)
+	result.add("reason", info.Reason)
+	result.add("recovered", info.Recovered)
+	if info.Topics != nil {
+		result.fields["topics"] = fmt.Sprintf("%v", *info.Topics)
+	}
+
+	return result.fields
+}
+
+// withMessageDetails returns a copy of the receiver with the topic,
+// partition, offset, key, headers and timestamp set to those of the
+// provided message.
+//
+// The function uses withOffsetDetails to initialize Topic, Partition
+// and Offset information.  Therefore, calling this function will also
+// set the Topics field to nil even if the message TopicPartition is
+// zero-value.
+func (info LogInfo) withMessageDetails(msg *kafka.Message) LogInfo {
+	info = LogInfo.withOffsetDetails(info, msg.TopicPartition)
+
+	info.Key = msg.Key
+
+	// headers are transformed into a map so that the LogInfo
+	// can be rendered as JSON using the standard encoding/json
+	// package if desired
+	if len(msg.Headers) > 0 {
+		info.Headers = make(map[string][]byte)
+		for _, header := range msg.Headers {
+			info.Headers[header.Key] = header.Value
+		}
+	}
+
+	// only set the timestamp if it is not the zero value to prevent a
+	// zero value rendered if the LogInfo is marshalled to JSON
+	if !msg.Timestamp.IsZero() {
+		info.Timestamp = &msg.Timestamp
+	}
+
+	return info
+}
+
+// withOffsetDetails returns a copy of the receiver with the topic, partition
+// and offset set to those of the provided topic partition.
+//
+// If the provided topic partition is a zero value, the topic, partition
+// and offset fields are set to nil.
+//
+// Calling this method will set the Topics field to nil (even if the provided
+// topic partition is a zero value).
+func (info LogInfo) withOffsetDetails(tp kafka.TopicPartition) LogInfo {
+	info.Topic = tp.Topic
+	info.Topics = nil
+
+	if z := (kafka.TopicPartition{}); tp == z {
+		info.Partition = nil
+		info.Offset = nil
+	} else {
+		info.Partition = &tp.Partition
+		info.Offset = &tp.Offset
+	}
+
+	return info
 }
 
 // Loggers is a struct that contains functions for logging debug, info and error

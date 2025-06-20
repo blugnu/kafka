@@ -31,7 +31,7 @@ import (
 //	p.Expect("topic").
 //		WithHeader("header.key", "value")
 //
-// If mutliple messages are expected, the expectations are met only
+// If multiple messages are expected, the expectations are met only
 // if messages are produced which meet the specified expectations in
 // the order in which the expectations were set.
 //
@@ -58,7 +58,7 @@ import (
 // false is returned with an error that describes the unmet expectations.
 // If all expectations were met, true is returned with a nil error.
 //
-// Yuo can use the bool indicator to control the test flow and provide
+// The bool indicator is used to control test flow and provide
 // your own test failure report, ignoring the error:
 //
 //	if met, _ := p.ExpectationsMet(); !met {
@@ -87,12 +87,16 @@ func (p *Producer[T]) Err() error {
 	return p.err
 }
 
+// Expect sets an expectation that a message will be produced to the
+// specified topic.  The expectation may be further specified using the
+// fluent API provided by the returned Expectation.
 func (p *Producer[T]) Expect(topic T) *Expectation {
 	ex := &Expectation{topic: fmt.Sprintf("%v", topic)}
 	p.expectations = append(p.expectations, ex)
 	return ex
 }
 
+// ExpectationsMet checks whether all expectations set on the Producer were met.
 func (p *Producer[T]) ExpectationsWereMet() error {
 	errs := []error{}
 	for i, ex := range p.expectations {
@@ -109,51 +113,69 @@ func (p *Producer[T]) ExpectationsWereMet() error {
 	return nil
 }
 
+// produce simulates the production of a message to the specified topic.
+//
+// If the topic is not set in the message, it sets a partition error indicating that the topic
+// is not set, otherwise the topic partition is initialized and the message is appended
+// to the messages map for that topic.
+func (p *Producer[T]) produce(msg kafka.Message) *kafka.TopicPartition {
+	tp := &kafka.TopicPartition{
+		Topic:     msg.TopicPartition.Topic,
+		Partition: 0,
+	}
+
+	if msg.TopicPartition.Topic == nil {
+		tp.Error = ErrTopicNotSet
+		return tp
+	}
+
+	topic := *msg.TopicPartition.Topic
+	tp.Offset = kafka.Offset(len(p.messages[topic]))
+	tp.Error = nil
+
+	p.messages[topic] = append(p.messages[topic], &msg)
+
+	return tp
+}
+
+// MustProduce produces a message to the topic specified in the expectation.
 func (p *Producer[T]) MustProduce(ctx context.Context, msg kafka.Message) (*kafka.TopicPartition, error) {
 	if p.next == 0 {
 		p.messages = map[string][]*kafka.Message{}
 	}
 
-	cpy := msg
-	tp := &kafka.TopicPartition{
-		Topic:     msg.TopicPartition.Topic,
-		Partition: 0,
-	}
-	if msg.TopicPartition.Topic != nil {
-		topic := *msg.TopicPartition.Topic
-		tp.Offset = kafka.Offset(len(p.messages[topic]))
-		p.messages[topic] = append(p.messages[topic], &cpy)
-	} else {
-		tp.Error = errors.New("topic not set")
+	tp := p.produce(msg)
+
+	if p.next == len(p.expectations) {
+		p.unexpected = append(p.unexpected, &msg)
+		return tp, coalesce(tp.Error, p.err)
 	}
 
+	ex := p.expectations[p.next]
 	p.next++
-	if p.next <= len(p.expectations) {
-		ex := p.expectations[p.next-1]
-		ex.msg = &cpy
-		p.err = ex.err
+	p.err = ex.err
 
-		if ex.err != nil {
-			ex.met = true
-			return nil, ex.err
-		}
-
-		ex.met = (ex.topic == "" || (msg.TopicPartition.Topic != nil && ex.topic == *msg.TopicPartition.Topic))
-		if !ex.met {
-			return nil, fmt.Errorf("message produced to unexpected topic\n  wanted: %s\n  got   : %s", ex.topic, *msg.TopicPartition.Topic)
-		}
-
-		ex.met = ex.key.Equal(msg.Key) &&
-			ex.value.Equal(msg.Value) &&
-			ex.headers.Equal(msg.Headers) &&
-			ex.header.In(msg.Headers)
-	} else {
-		p.unexpected = append(p.unexpected, &cpy)
+	ex.msg = &msg
+	if ex.err != nil {
+		ex.met = true
+		return nil, ex.err
 	}
+
+	ex.met = (ex.topic == "" || (msg.TopicPartition.Topic != nil && ex.topic == *msg.TopicPartition.Topic))
+	if !ex.met {
+		return nil, fmt.Errorf("message produced to unexpected topic\n  wanted: %s\n  got   : %s", ex.topic, *msg.TopicPartition.Topic)
+	}
+
+	ex.met = ex.key.Equal(msg.Key) &&
+		ex.value.Equal(msg.Value) &&
+		ex.headers.Equal(msg.Headers) &&
+		ex.header.In(msg.Headers)
 
 	return tp, coalesce(tp.Error, p.err)
 }
 
+// Reset resets the Producer to its initial state, clearing all expectations
+// and unexpected messages, and resetting the next index and error.
 func (p *Producer[T]) Reset() {
 	*p = Producer[T]{}
 }

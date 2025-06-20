@@ -1,7 +1,6 @@
-package mock
+package mock //nolint: testpackage // testing a private type
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
@@ -122,26 +121,32 @@ func TestHeadersEqual(t *testing.T) {
 func TestHeadersString(t *testing.T) {
 	// ARRANGE
 	testcases := []struct {
+		name   string
 		sut    *expectheaders
 		result string
 	}{
-		{sut: nil, result: ""},
-		{sut: &expectheaders{
-			value: map[string]string{
-				"key": "value",
-			}},
+		{name: "nil",
+			sut:    nil,
+			result: "",
+		},
+		{name: "single header",
+			sut: &expectheaders{
+				value: map[string]string{
+					"key": "value",
+				}},
 			result: "=[{\"key\": \"value\"}]",
 		},
-		{sut: &expectheaders{
-			value: map[string]string{
-				"key.1": "value.1",
-				"key.2": "value.2",
-			}},
+		{name: "two headers",
+			sut: &expectheaders{
+				value: map[string]string{
+					"key.1": "value.1",
+					"key.2": "value.2",
+				}},
 			result: "=[{\"key.1\": \"value.1\"}, {\"key.2\": \"value.2\"}]",
 		},
 	}
-	for tn, tc := range testcases {
-		t.Run(fmt.Sprintf("%d", tn), func(t *testing.T) {
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
 			// ACT
 			got := tc.sut.String()
 
