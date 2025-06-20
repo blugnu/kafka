@@ -1,4 +1,4 @@
-package kafka
+package kafka //nolint: testpackage // testing private types
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 )
 
 func TestConsumerOptions(t *testing.T) {
-	// ARRANGE
 	// ARRANGE
 	testcases := []struct {
 		scenario string

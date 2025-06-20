@@ -1,11 +1,12 @@
-package kafka
+package kafka_test
 
 import (
 	"errors"
 	"testing"
 
+	"github.com/blugnu/kafka"
 	"github.com/blugnu/test"
-	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	confluent "github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
 func TestCreateMessage(t *testing.T) {
@@ -17,13 +18,13 @@ func TestCreateMessage(t *testing.T) {
 		{scenario: "no options",
 			exec: func(t *testing.T) {
 				// ACT
-				msg, err := CreateMessage()
+				msg, err := kafka.CreateMessage()
 
 				// ASSERT
 				test.That(t, err).IsNil()
-				test.That(t, msg).Equals(kafka.Message{
-					TopicPartition: kafka.TopicPartition{
-						Partition: kafka.PartitionAny,
+				test.That(t, msg).Equals(confluent.Message{
+					TopicPartition: confluent.TopicPartition{
+						Partition: confluent.PartitionAny,
 					},
 				})
 			},
@@ -32,16 +33,16 @@ func TestCreateMessage(t *testing.T) {
 			exec: func(t *testing.T) {
 				// ARRANGE
 				opterr := errors.New("option error")
-				opt := func(msg *kafka.Message) error {
+				opt := func(*confluent.Message) error {
 					return opterr
 				}
 
 				// ACT
-				result, err := CreateMessage(opt)
+				result, err := kafka.CreateMessage(opt)
 
 				// ASSERT
 				test.Error(t, err).Is(opterr)
-				test.That(t, result).Equals(kafka.Message{})
+				test.That(t, result).Equals(confluent.Message{})
 			},
 		},
 	}
@@ -61,13 +62,13 @@ func TestNewMessage(t *testing.T) {
 		{scenario: "no options",
 			exec: func(t *testing.T) {
 				// ACT
-				msg := NewMessage("topic")
+				msg := kafka.NewMessage("topic")
 
 				// ASSERT
-				test.That(t, msg).Equals(kafka.Message{
-					TopicPartition: kafka.TopicPartition{
+				test.That(t, msg).Equals(confluent.Message{
+					TopicPartition: confluent.TopicPartition{
 						Topic:     test.AddressOf("topic"),
-						Partition: kafka.PartitionAny,
+						Partition: confluent.PartitionAny,
 					},
 				})
 			},
@@ -76,16 +77,16 @@ func TestNewMessage(t *testing.T) {
 			exec: func(t *testing.T) {
 				// ARRANGE
 				opterr := errors.New("option error")
-				opt := func(msg *kafka.Message) error {
+				opt := func(*confluent.Message) error {
 					return opterr
 				}
 				defer test.ExpectPanic(opterr).Assert(t)
 
 				// ACT
-				result := NewMessage("topic", opt)
+				result := kafka.NewMessage("topic", opt)
 
 				// ASSERT
-				test.That(t, result).Equals(kafka.Message{})
+				test.That(t, result).Equals(confluent.Message{})
 			},
 		},
 	}
@@ -94,7 +95,6 @@ func TestNewMessage(t *testing.T) {
 			tc.exec(t)
 		})
 	}
-
 }
 
 func TestUnmarshalJSON(t *testing.T) {
@@ -110,12 +110,12 @@ func TestUnmarshalJSON(t *testing.T) {
 					ID   int
 					Name string
 				}
-				msg := &kafka.Message{
+				msg := &confluent.Message{
 					Value: []byte(`{"ID":123,"Name":"John"}`),
 				}
 
 				// ACT
-				result, err := UnmarshalJSON[payload](msg)
+				result, err := kafka.UnmarshalJSON[payload](msg)
 
 				// ASSERT
 				test.That(t, err).IsNil()
@@ -125,15 +125,13 @@ func TestUnmarshalJSON(t *testing.T) {
 		{scenario: "invalid JSON",
 			exec: func(t *testing.T) {
 				// ARRANGE
-				jsonerr := errors.New("json error")
-				msg := &kafka.Message{}
-				defer test.Using(&jsonUnmarshal, func([]byte, any) error { return jsonerr })()
+				msg := &confluent.Message{Value: []byte{}}
 
 				// ACT
-				result, err := UnmarshalJSON[string](msg)
+				result, err := kafka.UnmarshalJSON[string](msg)
 
 				// ASSERT
-				test.Error(t, err).Is(jsonerr)
+				test.That(t, err.Error()).Equals("unexpected end of JSON input")
 				test.That(t, result).IsNil()
 			},
 		},

@@ -9,8 +9,8 @@ import (
 // CypherHandler is an interface that must be implemented by a handler provided to
 // a Config for the encryption and decryption of messages.
 type CypherHandler interface {
-	Decrypt(context.Context, *kafka.Message) error
-	Encrypt(context.Context, *kafka.Message) error
+	Decrypt(ctx context.Context, msg *kafka.Message) error
+	Encrypt(ctx context.Context, msg *kafka.Message) error
 }
 
 // CypherFunc is the signature for a function that can be used to encrypt or decrypt

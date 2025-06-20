@@ -1,10 +1,11 @@
-package kafka
+package kafka_test
 
 import (
 	"testing"
 
+	"github.com/blugnu/kafka"
 	"github.com/blugnu/test"
-	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	confluent "github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
 func TestHeaders(t *testing.T) {
@@ -16,15 +17,15 @@ func TestHeaders(t *testing.T) {
 		{scenario: "Get",
 			exec: func(t *testing.T) {
 				// ARRANGE
-				msg := &kafka.Message{
-					Headers: []kafka.Header{
+				msg := &confluent.Message{
+					Headers: []confluent.Header{
 						{Key: "key1", Value: []byte("value1")},
 						{Key: "key2", Value: []byte("value2")},
 					},
 				}
 
 				// ACT
-				h := Headers(msg)
+				h := kafka.Headers(msg)
 
 				// ASSERT
 				test.That(t, h.Get("key1")).Equals([]byte("value1"))
@@ -35,15 +36,15 @@ func TestHeaders(t *testing.T) {
 		{scenario: "GetString",
 			exec: func(t *testing.T) {
 				// ARRANGE
-				msg := &kafka.Message{
-					Headers: []kafka.Header{
+				msg := &confluent.Message{
+					Headers: []confluent.Header{
 						{Key: "key1", Value: []byte("value1")},
 						{Key: "key2", Value: []byte("value2")},
 					},
 				}
 
 				// ACT
-				h := Headers(msg)
+				h := kafka.Headers(msg)
 
 				// ASSERT
 				test.That(t, h.GetString("key1")).Equals("value1")
@@ -54,13 +55,13 @@ func TestHeaders(t *testing.T) {
 		{scenario: "HasKey",
 			exec: func(t *testing.T) {
 				// ARRANGE
-				msg := &kafka.Message{
-					Headers: []kafka.Header{
+				msg := &confluent.Message{
+					Headers: []confluent.Header{
 						{Key: "key1", Value: []byte("value1")},
 						{Key: "key2", Value: []byte("value2")},
 					},
 				}
-				h := Headers(msg)
+				h := kafka.Headers(msg)
 
 				// ACT/ASSERT
 				test.IsTrue(t, h.HasKey("key1"))

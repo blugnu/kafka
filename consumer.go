@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -20,7 +21,7 @@ var (
 
 type Consumer interface {
 	IsRunning() error
-	Start(context.Context) error
+	Start(ctx context.Context) error
 	Wait() error
 }
 
@@ -58,16 +59,18 @@ type consumer struct {
 // If the commit fails, a FatalError is returned (the consumer will stop
 // processing messages)
 var commitOffset = func(ctx context.Context, c *consumer, msg *kafka.Message, readNext bool) error {
+	const timeoutMS = 100
+
 	offset := msg.TopicPartition
 	if readNext {
 		offset.Offset += 1
-	} else if err := c.funcs.seek(offset, 100); err != nil {
+	} else if err := c.funcs.seek(offset, timeoutMS); err != nil {
 		return fmt.Errorf("commit: seek: %w", err)
 	}
 
 	committed, err := c.funcs.commitOffsets([]kafka.TopicPartition{offset})
 	if err != nil {
-		if err, ok := err.(kafka.Error); ok && err.Code() == kafka.ErrNoOffset {
+		if IsKafkaError(err, kafka.ErrNoOffset) {
 			logs.Debug(ctx, "no offset to commit", LogInfo{Consumer: &c.groupId})
 			return nil
 		}
@@ -79,275 +82,6 @@ var commitOffset = func(ctx context.Context, c *consumer, msg *kafka.Message, re
 	}, committed[0]),
 	)
 
-	return nil
-}
-
-// consume reads a message from the consumer, handles it and commits
-// the offset.
-//
-// The offset committed depends on the result of the message handling:
-//
-//	ErrReprocessMessage  -> commit offset minus one (the message will be
-//	                        reprocessed)
-//
-//	nil (no error)       -> commit offset as-is (the message is processed)
-//
-//	any other error      -> no attempt is made to to commit any offset;
-//	                        the consumer will terminate and the message will be
-//	                        available for processing by the restarted consumer or
-//	                        another consumer in the same group, after rebalancing)
-func (c *consumer) consume(ctx context.Context) error {
-	// NOTE: error logging is performed here, even though any error is also
-	// returned by the method.
-	//
-	// REASON: The caller is the consumer run loop which will not have access to
-	// details of the message to add to the logs; the run loop uses the returned
-	// error to determine whether or not to continue processing messages and to
-	// record the error in the log at that .
-
-	// read the next message
-	msg, err := c.readMessage()
-	if err == ErrTimeout {
-		return nil
-	}
-	if err != nil {
-		logs.Error(ctx, "read message error", LogInfo{
-			Consumer: &c.groupId,
-			Error:    err,
-		})
-		return err
-	}
-
-	err = c.handleMessage(ctx, msg)
-	if err == nil || err == ErrReprocessMessage {
-		// the original error is expected to have been logged by the handler
-		if err == ErrReprocessMessage {
-			logs.Debug(ctx, "message will be reprocessed", LogInfo.withOffsetDetails(
-				LogInfo{
-					Consumer: &c.groupId,
-				},
-				msg.TopicPartition),
-			)
-		}
-		if err := commitOffset(ctx, c, msg, err == nil); err != nil {
-			logs.Error(ctx, "commit offset error", LogInfo.withOffsetDetails(
-				LogInfo{
-					Consumer: &c.groupId,
-					Error:    err,
-				},
-				msg.TopicPartition),
-			)
-			return err
-		}
-		return nil
-	}
-	return err
-}
-
-// getState returns the state of the consumer.
-func (c *consumer) getState() consumerState {
-	c.state.Lock()
-	defer c.state.Unlock()
-	return c.state.value
-}
-
-// lockState locks the state and returns a pointer to the state value
-// for the caller to work with.  The caller must call state.Unlock().
-func (c *consumer) lockState() *consumerState {
-	c.state.Lock()
-	return &c.state.value
-}
-
-// setState updates the state of the consumer and returns the new state.
-func (c *consumer) setState(state consumerState) consumerState {
-	c.state.Lock()
-	defer c.state.Unlock()
-	c.state.value = state
-	return state
-}
-
-// handleMessage identifies the handler for a specified message, decrypts
-// the message and calls the handler function.
-func (c *consumer) handleMessage(ctx context.Context, msg *kafka.Message) error {
-	handle := func(err error) error {
-		return errorcontext.Errorf(ctx, "handleMessage: %w", err)
-	}
-
-	h, ok := c.handlers[*msg.TopicPartition.Topic]
-	if !ok {
-		return ErrNoHandler
-	}
-
-	if err := c.decrypt(ctx, msg); err != nil {
-		return handle(fmt.Errorf("decrypt message: %w", err))
-	}
-
-	// the handler is called in a function that will recover any panic
-	// and log the details before re-panicking; this enables the log
-	// entry to include details of the message being processed at the
-	// time of the panic.
-	//
-	// the re-panic is necessary to ensure the consumer stops processing
-	// messages and terminates in a panic state.
-	err := func() (err error) {
-		defer func() {
-			if r := recover(); r != nil {
-				logs.Error(ctx, "handler panic", LogInfo.withMessageDetails(
-					LogInfo{
-						Consumer:  &c.groupId,
-						Recovered: addr(r),
-					}, msg),
-				)
-				panic(r)
-			}
-		}()
-		return h.HandleMessage(ctx, msg)
-	}()
-
-	if err != nil && err != ErrReprocessMessage {
-		logs.Error(ctx, "handler error", LogInfo.withMessageDetails(
-			LogInfo{
-				Consumer: &c.groupId,
-				Error:    err,
-			}, msg),
-		)
-	}
-
-	return err
-}
-
-// readMessage reads the next message from the consumer or returns
-// ErrTimeout if no message is available within the configured timeout.
-func (c *consumer) readMessage() (*kafka.Message, error) {
-	msg, err := c.funcs.readMessage(c.readTimeout)
-	if err, ok := err.(kafka.Error); ok && err.Code() == kafka.ErrTimedOut {
-		return nil, ErrTimeout
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	return msg, nil
-}
-
-// run provides the main loop for the consumer.
-func (c *consumer) run(ctx context.Context) {
-	var err error
-
-	exitLog := logs.Info // will be upgraded to logs.Error if an error occurs
-	logInfo := LogInfo{
-		Consumer: &c.groupId,
-	}
-
-	defer func() {
-		c.cleanup(ctx, err, recover())
-	}()
-
-	c.setState(csRunning)
-	logs.Info(ctx, "waiting for messages", logInfo)
-
-runLoop:
-	for {
-		select {
-		case <-ctx.Done():
-			logInfo.Reason = addr("context done")
-			break runLoop
-
-		case <-c.sig:
-			logInfo.Reason = addr("signal")
-			break runLoop
-
-		default:
-			if err = c.consume(ctx); err == nil {
-				continue
-			}
-			logInfo.Reason = addr("error")
-			logInfo.Error = err
-			exitLog = logs.Error
-			break runLoop
-		}
-	}
-	exitLog(ctx, "consumer stopping", logInfo)
-	c.setState(csStopping)
-}
-
-// cleanup performs the necessary cleanup operations when the consumer
-// is stopped. The function is called when the run() func exits, with:
-//
-//   - EITHER the error that caused the run loop to terminate;
-//   - OR a recovered value from a panic;
-//   - OR nil error AND nil panic.
-//
-// The function will never be called with BOTH a non-nil error AND a
-// recovered panic value.
-func (c *consumer) cleanup(ctx context.Context, err error, recovered any) {
-	state := c.setState(map[bool]consumerState{
-		true:  csPanic,
-		false: csStopped,
-	}[recovered != nil])
-
-	if state == csPanic {
-		err = &ConsumerPanicError{Recovered: recovered}
-	}
-
-	if closeErr := c.funcs.close(); closeErr != nil {
-		logs.Error(ctx, "error closing consumer", LogInfo{
-			Consumer: &c.groupId,
-			Error:    closeErr,
-		})
-	}
-
-	// if the consumer was stopped due to an error (or panic), set the error
-	// on the consumer so it may be retrieved by the IsRunning() method
-	c.err = err
-
-	for _, ch := range c.waiting {
-		ch <- err
-		close(ch)
-	}
-
-	close(c.sig)
-
-	logs.Info(ctx, "consumer stopped", LogInfo{
-		Consumer: &c.groupId,
-	})
-}
-
-// subscribe subscribes the consumer to the topics for which handlers have
-// been registered.
-//
-// If no handlers have been registered, the consumer will return ErrNoHandlersConfigured.
-func (c *consumer) subscribe(ctx context.Context) error {
-	// this function changes the state of the consumer so we acquire a pointer
-	// the state value from lockState to ensure the state is updated correctly
-	state := c.lockState()
-	defer c.state.Unlock()
-
-	if *state != csReady {
-		return fmt.Errorf("start: %w: current state: %s", ErrInvalidOperation, c.state.value)
-	}
-
-	if len(c.handlers) == 0 {
-		return fmt.Errorf("start: %w", ErrNoHandlersConfigured)
-	}
-
-	topics := []string{}
-	for t := range c.handlers {
-		topics = append(topics, t)
-	}
-
-	logs.Debug(ctx, "subscribing to topics", LogInfo{
-		Consumer: &c.groupId,
-		Topics:   addr(topics),
-	})
-
-	if err := c.funcs.subscribe(topics, nil); err != nil {
-		c.err = err
-		*state = csError
-		return fmt.Errorf("start: subscribe: %w", err)
-	}
-
-	*state = csSubscribed
 	return nil
 }
 
@@ -479,6 +213,291 @@ func (c *consumer) Wait() error {
 	return <-ch
 }
 
+// consume reads a message from the consumer, handles it and commits
+// the offset.
+//
+// The offset committed depends on the result of the message handling:
+//
+//	ErrReprocessMessage  -> commit offset minus one (the message will be
+//	                        reprocessed)
+//
+//	nil (no error)       -> commit offset as-is (the message is processed)
+//
+//	any other error      -> no attempt is made to commit any offset;
+//	                        the consumer will terminate and the message will be
+//	                        available for processing by the restarted consumer or
+//	                        another consumer in the same group, after rebalancing)
+func (c *consumer) consume(ctx context.Context) error {
+	// NOTE: error logging is performed here, even though any error is also
+	// returned by the method.
+	//
+	// REASON: The caller is the consumer run loop which will not have access to
+	// details of the message to add to the logs; the run loop uses the returned
+	// error to determine whether or not to continue processing messages and to
+	// record the error in the log at that .
+
+	// read the next message
+	msg, err := c.readMessage()
+	if errors.Is(err, ErrTimeout) {
+		return nil
+	}
+	if err != nil {
+		logs.Error(ctx, "read message error", LogInfo{
+			Consumer: &c.groupId,
+			Error:    err,
+		})
+		return err
+	}
+
+	err = c.handleMessage(ctx, msg)
+	if reprocess := errors.Is(err, ErrReprocessMessage); reprocess || err == nil {
+		if reprocess {
+			// the original error is expected to have been logged by the handler;
+			// additional debug logging is provided to indicate that the message
+			// will be reprocessed
+			logs.Debug(ctx, "message will be reprocessed",
+				LogInfo.withOffsetDetails(
+					LogInfo{Consumer: &c.groupId},
+					msg.TopicPartition,
+				),
+			)
+		}
+
+		// commit the offset of the message; if the error was nil, the offset
+		// will be committed to read the next message, otherwise to re-read
+		// the same message
+		readNext := err == nil
+		if err := commitOffset(ctx, c, msg, readNext); err != nil {
+			// if the commit fails, log the error and return it; this will
+			// cause the consumer to stop processing messages
+			logs.Error(ctx, "commit offset error",
+				LogInfo.withOffsetDetails(
+					LogInfo{
+						Consumer: &c.groupId,
+						Error:    err,
+					},
+					msg.TopicPartition,
+				),
+			)
+			return err
+		}
+
+		// the error was nil or ErrReprocessMessage; if the latter then the reprocessing
+		// has been organized and there was no error as far as the caller is concerned,
+		// so we return nil to indicate that the message was handled successfully
+		return nil
+	}
+
+	return err
+}
+
+// getState returns the state of the consumer.
+func (c *consumer) getState() consumerState {
+	c.state.Lock()
+	defer c.state.Unlock()
+	return c.state.value
+}
+
+// lockState locks the state and returns a pointer to the state value
+// for the caller to work with.  The caller must call state.Unlock().
+func (c *consumer) lockState() *consumerState {
+	c.state.Lock()
+	return &c.state.value
+}
+
+// setState updates the state of the consumer and returns the new state.
+func (c *consumer) setState(state consumerState) consumerState {
+	c.state.Lock()
+	defer c.state.Unlock()
+	c.state.value = state
+	return state
+}
+
+// handleMessage identifies the handler for a specified message, decrypts
+// the message and calls the handler function.
+func (c *consumer) handleMessage(ctx context.Context, msg *kafka.Message) error {
+	handle := func(err error) error {
+		return errorcontext.Errorf(ctx, "handleMessage: %w", err)
+	}
+
+	h, ok := c.handlers[*msg.TopicPartition.Topic]
+	if !ok {
+		return ErrNoHandler
+	}
+
+	if err := c.decrypt(ctx, msg); err != nil {
+		return handle(fmt.Errorf("decrypt message: %w", err))
+	}
+
+	// the handler is called in a function that will recover any panic
+	// and log the details before re-panicking; this enables the log
+	// entry to include details of the message being processed at the
+	// time of the panic.
+	//
+	// the re-panic is necessary to ensure the consumer stops processing
+	// messages and terminates in a panic state.
+	err := func() error {
+		defer func() {
+			if r := recover(); r != nil {
+				logs.Error(ctx, "handler panic", LogInfo.withMessageDetails(
+					LogInfo{
+						Consumer:  &c.groupId,
+						Recovered: addr(r),
+					}, msg),
+				)
+				panic(r)
+			}
+		}()
+		return h.HandleMessage(ctx, msg)
+	}()
+
+	if err != nil && !errors.Is(err, ErrReprocessMessage) {
+		logs.Error(ctx, "handler error", LogInfo.withMessageDetails(
+			LogInfo{
+				Consumer: &c.groupId,
+				Error:    err,
+			}, msg),
+		)
+	}
+
+	return err
+}
+
+// readMessage reads the next message from the consumer or returns
+// ErrTimeout if no message is available within the configured timeout.
+func (c *consumer) readMessage() (*kafka.Message, error) {
+	msg, err := c.funcs.readMessage(c.readTimeout)
+	if IsKafkaError(err, kafka.ErrTimedOut) {
+		return nil, ErrTimeout
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return msg, nil
+}
+
+// run provides the main loop for the consumer.
+func (c *consumer) run(ctx context.Context) {
+	var err error
+
+	exitLog := logs.Info // will be upgraded to logs.Error if an error occurs
+	logInfo := LogInfo{
+		Consumer: &c.groupId,
+	}
+
+	defer func() {
+		c.cleanup(ctx, err, recover())
+	}()
+
+	c.setState(csRunning)
+	logs.Info(ctx, "waiting for messages", logInfo)
+
+runLoop:
+	for {
+		select {
+		case <-ctx.Done():
+			logInfo.Reason = addr("context done")
+			break runLoop
+
+		case <-c.sig:
+			logInfo.Reason = addr("signal")
+			break runLoop
+
+		default:
+			if err = c.consume(ctx); err == nil {
+				continue
+			}
+			logInfo.Reason = addr("error")
+			logInfo.Error = err
+			exitLog = logs.Error
+			break runLoop
+		}
+	}
+	exitLog(ctx, "consumer stopping", logInfo)
+	c.setState(csStopping)
+}
+
+// cleanup performs the necessary cleanup operations when the consumer
+// is stopped. The function is called when the run() func exits, with:
+//
+//   - EITHER the error that caused the run loop to terminate;
+//   - OR a recovered value from a panic;
+//   - OR nil error AND nil panic.
+//
+// The function will never be called with BOTH a non-nil error AND a
+// recovered panic value.
+func (c *consumer) cleanup(ctx context.Context, err error, recovered any) {
+	state := c.setState(map[bool]consumerState{
+		true:  csPanic,
+		false: csStopped,
+	}[recovered != nil])
+
+	if state == csPanic {
+		err = &ConsumerPanicError{Recovered: recovered}
+	}
+
+	if closeErr := c.funcs.close(); closeErr != nil {
+		logs.Error(ctx, "error closing consumer", LogInfo{
+			Consumer: &c.groupId,
+			Error:    closeErr,
+		})
+	}
+
+	// if the consumer was stopped due to an error (or panic), set the error
+	// on the consumer so it may be retrieved by the IsRunning() method
+	c.err = err
+
+	for _, ch := range c.waiting {
+		ch <- err
+		close(ch)
+	}
+
+	close(c.sig)
+
+	logs.Info(ctx, "consumer stopped", LogInfo{
+		Consumer: &c.groupId,
+	})
+}
+
+// subscribe subscribes the consumer to the topics for which handlers have
+// been registered.
+//
+// If no handlers have been registered, the consumer will return ErrNoHandlersConfigured.
+func (c *consumer) subscribe(ctx context.Context) error {
+	// this function changes the state of the consumer so we acquire a pointer
+	// the state value from lockState to ensure the state is updated correctly
+	state := c.lockState()
+	defer c.state.Unlock()
+
+	if *state != csReady {
+		return fmt.Errorf("start: %w: current state: %s", ErrInvalidOperation, c.state.value)
+	}
+
+	if len(c.handlers) == 0 {
+		return fmt.Errorf("start: %w", ErrNoHandlersConfigured)
+	}
+
+	topics := []string{}
+	for t := range c.handlers {
+		topics = append(topics, t)
+	}
+
+	logs.Debug(ctx, "subscribing to topics", LogInfo{
+		Consumer: &c.groupId,
+		Topics:   addr(topics),
+	})
+
+	if err := c.funcs.subscribe(topics, nil); err != nil {
+		c.err = err
+		*state = csError
+		return fmt.Errorf("start: subscribe: %w", err)
+	}
+
+	*state = csSubscribed
+	return nil
+}
+
 func (c *consumer) configure(cfg *Config, opts ...ConsumerOption) error {
 	handle := func(err error) error {
 		return fmt.Errorf("configure: %w", err)
@@ -514,6 +533,8 @@ func (c *consumer) configure(cfg *Config, opts ...ConsumerOption) error {
 	return nil
 }
 
+// NewConsumer creates a new Kafka consumer with the specified configuration
+// and options.  The consumer must be started before it can receive messages.
 func NewConsumer(config *Config, opts ...ConsumerOption) (Consumer, error) {
 	handle := func(err error) (Consumer, error) {
 		return nil, fmt.Errorf("kafka.NewConsumer: %w", err)

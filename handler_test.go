@@ -1,12 +1,12 @@
-package kafka
+package kafka_test
 
 import (
 	"context"
 	"errors"
 	"testing"
 
+	"github.com/blugnu/kafka"
 	"github.com/blugnu/test"
-	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
 func TestHandlerFunc(t *testing.T) {
@@ -20,7 +20,7 @@ func TestHandlerFunc(t *testing.T) {
 		{scenario: "nil",
 			exec: func(t *testing.T) {
 				// ARRANGE
-				sut := HandlerFunc(nil)
+				sut := kafka.HandlerFunc(nil)
 
 				// ACT
 				err := sut.HandleMessage(ctx, nil)
@@ -33,7 +33,7 @@ func TestHandlerFunc(t *testing.T) {
 			exec: func(t *testing.T) {
 				// ARRANGE
 				sentinel := errors.New("error")
-				sut := HandlerFunc(func(ctx context.Context, m *kafka.Message) error {
+				sut := kafka.HandlerFunc(func(ctx context.Context, m *kafka.Message) error {
 					return sentinel
 				})
 
@@ -67,13 +67,13 @@ func TestIf(t *testing.T) {
 				condition := func(m *kafka.Message) bool {
 					return true
 				}
-				handler := HandlerFunc(func(ctx context.Context, m *kafka.Message) error {
+				handler := kafka.HandlerFunc(func(ctx context.Context, m *kafka.Message) error {
 					handlerIsCalled = true
 					return nil
 				})
 
 				// ACT
-				err := If(condition, handler).HandleMessage(ctx, nil)
+				err := kafka.If(condition, handler).HandleMessage(ctx, nil)
 
 				// ASSERT
 				test.That(t, err).IsNil()
@@ -87,13 +87,13 @@ func TestIf(t *testing.T) {
 				condition := func(m *kafka.Message) bool {
 					return false
 				}
-				handler := HandlerFunc(func(ctx context.Context, m *kafka.Message) error {
+				handler := kafka.HandlerFunc(func(ctx context.Context, m *kafka.Message) error {
 					handlerIsCalled = true
 					return nil
 				})
 
 				// ACT
-				err := If(condition, handler).HandleMessage(ctx, nil)
+				err := kafka.If(condition, handler).HandleMessage(ctx, nil)
 
 				// ASSERT
 				test.That(t, err).IsNil()

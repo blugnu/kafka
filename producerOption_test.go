@@ -1,4 +1,4 @@
-package kafka
+package kafka //nolint: testpackage // testing private functions and types
 
 import (
 	"context"
@@ -25,7 +25,10 @@ func TestProducerOptions(t *testing.T) {
 
 				// ASSERT
 				test.That(t, err).IsNil()
-				test.That(t, cfg.config["delivery.timeout.ms"].(int)).Equals(10)
+
+				if timeout, ok := test.IsType[int](t, cfg.config["delivery.timeout.ms"]); ok {
+					test.That(t, timeout).Equals(10)
+				}
 			},
 		},
 		{scenario: "MaxRetries",

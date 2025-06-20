@@ -1,7 +1,7 @@
-package kafka
+package kafka //nolint: testpackage // testing private types
 
 import (
-	"fmt"
+	"strconv"
 	"testing"
 )
 
@@ -21,7 +21,7 @@ func TestConsumerState(t *testing.T) {
 		{consumerState(-1), "invalid consumerstate: -1"},
 	}
 	for tn, tc := range testcases {
-		t.Run(fmt.Sprintf("%d", tn), func(t *testing.T) {
+		t.Run(strconv.Itoa(tn), func(t *testing.T) {
 			// ACT
 			got := tc.consumerState.String()
 

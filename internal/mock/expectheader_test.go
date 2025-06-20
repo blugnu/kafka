@@ -1,7 +1,7 @@
-package mock
+package mock //nolint: testpackage // testing a private type
 
 import (
-	"fmt"
+	"strconv"
 	"testing"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
@@ -129,7 +129,7 @@ func TestHeaderString(t *testing.T) {
 		},
 	}
 	for tn, tc := range testcases {
-		t.Run(fmt.Sprintf("%d", tn), func(t *testing.T) {
+		t.Run(strconv.Itoa(tn), func(t *testing.T) {
 			// ACT
 			got := tc.sut.String()
 

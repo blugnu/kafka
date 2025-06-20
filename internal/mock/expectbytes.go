@@ -7,10 +7,10 @@ import (
 )
 
 type BytesExpectation interface {
-	AsJson(any)
-	AsString(string)
+	AsJson(v any)
+	AsString(v string)
 	Empty()
-	Value([]byte)
+	Value(v []byte)
 }
 
 type expectbytes struct {

@@ -1,7 +1,7 @@
-package mock
+package mock //nolint: testpackage // testing a private function
 
 import (
-	"fmt"
+	"strconv"
 	"testing"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
@@ -43,7 +43,7 @@ func TestMsgInfo(t *testing.T) {
 		},
 	}
 	for tn, tc := range testcases {
-		t.Run(fmt.Sprintf("%d", tn+1), func(t *testing.T) {
+		t.Run(strconv.Itoa(tn+1), func(t *testing.T) {
 			// ACT
 			got := msginfo(tc.msg)
 

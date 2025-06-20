@@ -1,7 +1,7 @@
-package kafka
+package kafka //nolint: testpackage // testing private function
 
 import (
-	"fmt"
+	"strconv"
 	"testing"
 )
 
@@ -17,7 +17,7 @@ func Test_coalesce(t *testing.T) {
 		{values: []int{3, 2, 1}, result: 3},
 	}
 	for tn, tc := range testcases {
-		t.Run(fmt.Sprintf("%d", tn), func(t *testing.T) {
+		t.Run(strconv.Itoa(tn), func(t *testing.T) {
 			// ACT
 			got := coalesce(tc.values...)
 

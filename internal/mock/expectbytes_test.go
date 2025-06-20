@@ -1,9 +1,9 @@
-package mock
+package mock //nolint: testpackage // testing a private type
 
 import (
 	"errors"
-	"fmt"
 	"reflect"
+	"strconv"
 	"testing"
 )
 
@@ -136,7 +136,7 @@ func TestBytesString(t *testing.T) {
 		{sut: &expectbytes{[]byte("any")}, result: "\"any\""},
 	}
 	for tn, tc := range testcases {
-		t.Run(fmt.Sprintf("%d", tn), func(t *testing.T) {
+		t.Run(strconv.Itoa(tn), func(t *testing.T) {
 			// ACT
 			got := tc.sut.String()
 
@@ -147,7 +147,6 @@ func TestBytesString(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestBytesValue(t *testing.T) {

@@ -1,9 +1,9 @@
-package mock
+package mock //nolint: testpackage // test relies on private symbols
 
 import (
 	"errors"
-	"fmt"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
@@ -37,7 +37,7 @@ func TestExpectationGot(t *testing.T) {
 		},
 	}
 	for tn, tc := range testcases {
-		t.Run(fmt.Sprintf("%d", tn+1), func(t *testing.T) {
+		t.Run(strconv.Itoa(tn+1), func(t *testing.T) {
 			// ARRANGE
 			sut := &Expectation{msg: tc.msg}
 
@@ -91,7 +91,7 @@ func TestExpectationWanted(t *testing.T) {
 		},
 	}
 	for tn, tc := range testcases {
-		t.Run(fmt.Sprintf("%d", tn+1), func(t *testing.T) {
+		t.Run(strconv.Itoa(tn+1), func(t *testing.T) {
 			// ACT
 			got := tc.sut.Wanted()
 
@@ -123,7 +123,7 @@ func TestReturnsError(t *testing.T) {
 	t.Run("sets error", func(t *testing.T) {
 		wanted := err
 		got := sut.err
-		if wanted != got {
+		if wanted != got { //nolint: errorlint // testing that the precise error was set, not a comparison for error handling
 			t.Errorf("\nwanted %#v\ngot    %#v", wanted, got)
 		}
 	})

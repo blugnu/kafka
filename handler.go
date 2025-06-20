@@ -50,7 +50,7 @@ func (fn HandlerFunc) HandleMessage(ctx context.Context, msg *Message) error {
 }
 
 type Handler interface {
-	HandleMessage(context.Context, *Message) error
+	HandleMessage(ctx context.Context, msg *Message) error
 }
 
 // If returns a Handler that only calls the given Handler if the given condition
