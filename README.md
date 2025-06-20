@@ -3,7 +3,7 @@
   <h1><i>making Kafka less Kafka-esque</i></h1>
   <div align="center">
     <a href="https://github.com/blugnu/kafka/actions/workflows/release.yml">
-        <img alt="build-status" src="https://github.com/blugnu/kafka/actions/workflows/pipeline.yml/badge.svg?branch=master&style=flat-square"/>
+        <img alt="build-status" src="https://github.com/blugnu/kafka/actions/workflows/release.yml/badge.svg?branch=master&style=flat-square"/>
     </a>
     <a href="https://goreportcard.com/report/github.com/blugnu/kafka" >
         <img alt="go report" src="https://goreportcard.com/badge/github.com/blugnu/kafka"/>
@@ -19,6 +19,9 @@
     </a>
     <a href="https://pkg.go.dev/github.com/blugnu/kafka">
         <img alt="docs" src="https://pkg.go.dev/badge/github.com/blugnu/kafka"/>
+    </a>
+    <a href="https://coderabbit.ai">
+        <img alt="reviewed by coderabbit" src="https://img.shields.io/coderabbit/prs/github/blugnu/kafka?utm_source=oss&utm_medium=github&utm_campaign=blugnu%2Fkafka&color=FF5700&logo=coderabbit"/>
     </a>
   </div>
 </div>
