@@ -1,7 +1,6 @@
 name: release
-on:
-  - push
+on: push
 jobs:
   release:
-    uses: blugnu/.reusable/.github/workflows/pipeline.module-release.yml@v0.7.3
+    uses: blugnu/.reusable/.github/workflows/pipeline.module-release.yml@fix/golangci-lint-versions
     secrets: inherit
