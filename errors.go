@@ -89,7 +89,7 @@ func (err UnexpectedDeliveryEvent) Is(target error) bool {
 }
 
 // IsKafkaError checks whether the error is a kafka.Error and has the specified code.
-// It returns true if the error is a kafka.Error and its code matches the provided code.
+// IsKafkaError reports whether the given error is a kafka.Error with the specified error code.
 func IsKafkaError(err error, code kafka.ErrorCode) bool {
 	var kerr kafka.Error
 	if ok := errors.As(err, &kerr); ok {

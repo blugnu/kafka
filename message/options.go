@@ -23,7 +23,9 @@ func Copy(src *kafka.Message) func(*kafka.Message) error {
 	}
 }
 
-// Header adds or replaces a message header.
+// Header returns a function that adds or replaces a header with the specified key and value in a kafka.Message.
+// If a header with the given key exists, its value is replaced; otherwise, a new header is appended.
+// The returned function always returns nil.
 func Header(k, v string) func(*kafka.Message) error {
 	return func(msg *kafka.Message) error {
 		for i, h := range msg.Headers {

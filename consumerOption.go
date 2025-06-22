@@ -58,7 +58,7 @@ func ConsumerGroupID(id string) ConsumerOption {
 //
 // For applications involving both consumers and producers the base
 // configuration kafka.Cypher may be specified which provides both
-// encryption and decryption functions.
+// MessageDecryption returns a ConsumerOption that sets a decryption function for processing messages before handling.
 func MessageDecryption(fn CypherFunc) ConsumerOption {
 	return func(_ *Config, con *consumer) error {
 		con.decrypt = fn

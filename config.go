@@ -18,7 +18,8 @@ type Config struct {
 	cypher
 }
 
-// NewConfig creates a new Config and applies the specified options.
+// NewConfig returns a new Config instance with the provided configuration options applied.
+// Each ConfigOption modifies the Config or returns an error; if any option fails, the error is returned and no Config is created.
 func NewConfig(opts ...ConfigOption) (*Config, error) {
 	cfg := &Config{
 		config: kafka.ConfigMap{},
@@ -160,7 +161,7 @@ func SecurityProtocol(protocol string) ConfigOption {
 
 // SSLCALocation sets the file path to the CA certificate for SSL connections.
 //
-// Sets the 'ssl.ca.location' key in the config map.
+// SSLCALocation sets the 'ssl.ca.location' configuration to specify the file path of the CA certificate for SSL connections.
 func SSLCALocation(filepath string) ConfigOption {
 	return func(cfg *Config) error {
 		return cfg.setKey("ssl.ca.location", filepath)

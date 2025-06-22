@@ -534,7 +534,10 @@ func (c *consumer) configure(cfg *Config, opts ...ConsumerOption) error {
 }
 
 // NewConsumer creates a new Kafka consumer with the specified configuration
-// and options.  The consumer must be started before it can receive messages.
+// NewConsumer creates a new Kafka consumer with the provided configuration and options.
+// The consumer must be started before it can receive messages.
+// It sets up topic handlers, configures the underlying Kafka client, initializes logging and signal handling, and prepares the consumer for use.
+// Returns the initialized Consumer or an error if setup fails.
 func NewConsumer(config *Config, opts ...ConsumerOption) (Consumer, error) {
 	handle := func(err error) (Consumer, error) {
 		return nil, fmt.Errorf("kafka.NewConsumer: %w", err)

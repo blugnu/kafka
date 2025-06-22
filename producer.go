@@ -43,7 +43,9 @@ type producer struct {
 	}
 }
 
-// NewProducer creates a new Producer with the given configuration and options.
+// NewProducer constructs and configures a new Kafka Producer using the provided configuration and optional producer options.
+// It initializes the underlying Kafka producer, applies configuration defaults and overrides, and starts a background goroutine to drain log events.
+// Returns the configured Producer or an error if initialization fails.
 func NewProducer(ctx context.Context, config *Config, opts ...ProducerOption) (Producer, error) {
 	config = config.clone()
 
@@ -77,7 +79,7 @@ func NewProducer(ctx context.Context, config *Config, opts ...ProducerOption) (P
 
 // NewMockProducer creates a new mock producer that can be used in tests.  The function
 // returns a Producer interface to be injected into dependents that require a Producer,
-// and a MockProducer interface, used by a test to set and test expectations.
+// NewMockProducer creates a mock Kafka producer for testing, returning both the Producer and MockProducer interfaces for use in test scenarios.
 func NewMockProducer[T comparable](ctx context.Context) (Producer, MockProducer[T]) {
 	p := &mock.Producer[T]{}
 	return p, p
