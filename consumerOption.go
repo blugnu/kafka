@@ -66,7 +66,40 @@ func MessageDecryption(fn CypherFunc) ConsumerOption {
 	}
 }
 
-// Message
+// ReadTimeoutNever is a special value for the ReadTimeout option
+// that indicates the consumer should never time out when reading
+// messages.
+//
+// Use this with caution; a consumer that never times out may be
+// ejected from the consumer group if it does not receive a message
+// within the configured session timeout.
+const ReadTimeoutNever = time.Duration(-1)
+
+// ReadTimeout sets the read timeout for the consumer.
+// If not set, a default of 1s is used.
+func ReadTimeout(timeout time.Duration) ConsumerOption {
+	return func(cfg *Config, consumer *consumer) error {
+		if timeout < 0 && timeout != ReadTimeoutNever {
+			return ErrInvalidReadTimeout
+		}
+		consumer.readTimeout = timeout
+		return nil
+	}
+}
+
+// SeekTimeout sets the timeout for seek operations on the consumer.
+// If not set, a default of 100ms is used.
+func SeekTimeout(timeout time.Duration) ConsumerOption {
+	return func(cfg *Config, consumer *consumer) error {
+		if timeout <= 0 {
+			return ErrInvalidSeekTimeout
+		}
+		consumer.seekTimeout = timeout
+		return nil
+	}
+}
+
+// TopicHandler registers a handler for a specific topic.
 func TopicHandler[T comparable](topic T, h Handler) ConsumerOption {
 	return func(_ *Config, c *consumer) error {
 		c.handlers[fmt.Sprintf("%v", topic)] = h
@@ -74,21 +107,12 @@ func TopicHandler[T comparable](topic T, h Handler) ConsumerOption {
 	}
 }
 
+// TopicHandlers registers multiple handlers for specific topics.
 func TopicHandlers[T comparable](handlers map[T]Handler) ConsumerOption {
 	return func(_ *Config, c *consumer) error {
 		for topic, h := range handlers {
 			_ = TopicHandler(topic, h)(nil, c)
 		}
-		return nil
-	}
-}
-
-func ReadTimeout(timeout time.Duration) ConsumerOption {
-	return func(cfg *Config, consumer *consumer) error {
-		if timeout < 0 && timeout != -1 {
-			return ErrInvalidReadTimeout
-		}
-		consumer.readTimeout = timeout
 		return nil
 	}
 }

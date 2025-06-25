@@ -29,6 +29,7 @@ type consumer struct {
 	groupId     string
 	handlers    map[string]Handler
 	readTimeout time.Duration
+	seekTimeout time.Duration
 	sig         chan os.Signal
 	logsChannel chan kafka.LogEvent
 	waiting     []chan error
@@ -48,6 +49,60 @@ type consumer struct {
 	}
 }
 
+// NewConsumer creates a new Kafka consumer with the specified configuration
+// and options.  The consumer must be started before it can receive messages.
+func NewConsumer(config *Config, opts ...ConsumerOption) (Consumer, error) {
+	handle := func(err error) (Consumer, error) {
+		return nil, fmt.Errorf("kafka.NewConsumer: %w", err)
+	}
+
+	const defaultReadTimeout = 1 * time.Second
+	const defaultSeekTimeout = 100 * time.Millisecond
+
+	consumer := &consumer{
+		handlers:    map[string]Handler{},
+		readTimeout: defaultReadTimeout,
+		seekTimeout: defaultSeekTimeout,
+	}
+
+	// clone the config and apply options
+	config = config.clone()
+	if err := consumer.configure(config, opts...); err != nil {
+		return handle(err)
+	}
+
+	// create the confluent consumer
+	var err error
+	if consumer.Consumer, err = createConsumer(&config.config); err != nil {
+		return handle(fmt.Errorf("createConsumer: %w", err))
+	}
+	consumer.funcs.close = consumer.Consumer.Close
+	consumer.funcs.commitOffsets = consumer.Consumer.CommitOffsets
+	consumer.funcs.readMessage = consumer.Consumer.ReadMessage
+	consumer.funcs.seek = consumer.Consumer.Seek
+	consumer.funcs.subscribe = consumer.Consumer.SubscribeTopics
+
+	// start a go routine to read events from the logs channel to prevent
+	// it filling up;
+	consumer.logsChannel = consumer.Consumer.Logs()
+	go func() {
+		for {
+			if _, ok := <-consumer.logsChannel; !ok {
+				consumer.logsChannel = nil
+				return
+			}
+		}
+	}()
+
+	// establish a ctrl-c signal channel for running in interactive console
+	consumer.sig = make(chan os.Signal, 1)
+	signal.Notify(consumer.sig, syscall.SIGINT, syscall.SIGTERM)
+
+	consumer.setState(csReady)
+
+	return consumer, nil
+}
+
 // commit commits the offset of the specified message.
 //
 // If readNext is true, the offset is committed as is (the consumer will read
@@ -59,12 +114,10 @@ type consumer struct {
 // If the commit fails, a FatalError is returned (the consumer will stop
 // processing messages)
 var commitOffset = func(ctx context.Context, c *consumer, msg *kafka.Message, readNext bool) error {
-	const seekTimeoutMS = 100 // FUTURE: make configurable per consumer?
-
 	offset := msg.TopicPartition
 	if readNext {
 		offset.Offset += 1
-	} else if err := c.funcs.seek(offset, seekTimeoutMS); err != nil {
+	} else if err := c.funcs.seek(offset, int(c.seekTimeout.Milliseconds())); err != nil {
 		return fmt.Errorf("commit: seek: %w", err)
 	}
 
@@ -531,54 +584,4 @@ func (c *consumer) configure(cfg *Config, opts ...ConsumerOption) error {
 	}
 
 	return nil
-}
-
-// NewConsumer creates a new Kafka consumer with the specified configuration
-// and options.  The consumer must be started before it can receive messages.
-func NewConsumer(config *Config, opts ...ConsumerOption) (Consumer, error) {
-	handle := func(err error) (Consumer, error) {
-		return nil, fmt.Errorf("kafka.NewConsumer: %w", err)
-	}
-
-	consumer := &consumer{
-		handlers:    map[string]Handler{},
-		readTimeout: 1 * time.Second,
-	}
-
-	// clone the config and apply options
-	config = config.clone()
-	if err := consumer.configure(config, opts...); err != nil {
-		return handle(err)
-	}
-
-	// create the confluent consumer
-	var err error
-	if consumer.Consumer, err = createConsumer(&config.config); err != nil {
-		return handle(fmt.Errorf("createConsumer: %w", err))
-	}
-	consumer.funcs.close = consumer.Consumer.Close
-	consumer.funcs.commitOffsets = consumer.Consumer.CommitOffsets
-	consumer.funcs.readMessage = consumer.Consumer.ReadMessage
-	consumer.funcs.seek = consumer.Consumer.Seek
-	consumer.funcs.subscribe = consumer.Consumer.SubscribeTopics
-
-	// start a go routine to read events from the logs channel to prevent
-	// it filling up;
-	consumer.logsChannel = consumer.Consumer.Logs()
-	go func() {
-		for {
-			if _, ok := <-consumer.logsChannel; !ok {
-				consumer.logsChannel = nil
-				return
-			}
-		}
-	}()
-
-	// establish a ctrl-c signal channel for running in interactive console
-	consumer.sig = make(chan os.Signal, 1)
-	signal.Notify(consumer.sig, syscall.SIGINT, syscall.SIGTERM)
-
-	consumer.setState(csReady)
-
-	return consumer, nil
 }

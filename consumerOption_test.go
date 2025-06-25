@@ -58,6 +58,10 @@ func TestConsumerOptions(t *testing.T) {
 						Config:   &Config{config: kafka.ConfigMap{}},
 						consumer: &consumer{readTimeout: 1 * time.Hour},
 					}},
+					{name: "SeekTimeout", sut: SeekTimeout(250 * time.Millisecond), result: result{
+						Config:   &Config{config: kafka.ConfigMap{}},
+						consumer: &consumer{seekTimeout: 250 * time.Millisecond},
+					}},
 				}
 				for _, tc := range testcases {
 					t.Run(tc.name, func(t *testing.T) {
@@ -102,6 +106,7 @@ func TestConsumerConfigurationErrorHandling(t *testing.T) {
 		{name: "auto offset reset (invalid)", sut: AutoOffsetReset("invalid"), result: cfgerr},
 		{name: "group id", sut: ConsumerGroupID("group"), result: cfgerr},
 		{name: "read timeout", sut: ReadTimeout(-2), result: ErrInvalidReadTimeout},
+		{name: "seek timeout", sut: SeekTimeout(-2), result: ErrInvalidSeekTimeout},
 	}
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
