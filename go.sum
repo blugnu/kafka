@@ -46,8 +46,8 @@ github.com/blugnu/errorcontext v0.3.2 h1:5npqzyyqY9MvjGxXX7gOHOyBLa/rOk6G5RQSX48
 github.com/blugnu/errorcontext v0.3.2/go.mod h1:cOy5McoqZ/jQuAL+lsBkwhWiFOQnVPzQwGuVRXGKlF0=
 github.com/blugnu/msgpack v0.2.1 h1:6ow2AI8/k/H0DV7OE5BbaJHVoL2uRloZmJNS0YEGb54=
 github.com/blugnu/msgpack v0.2.1/go.mod h1:MiypHlTGVfNLKlU0xaroQFLhuOwwftIYb7YA12/ALEc=
-github.com/blugnu/test v0.7.0 h1:hbhtXBSphlvqVD02n8TDT13fCgN3kf7ifAbHLxBgGZc=
-github.com/blugnu/test v0.7.0/go.mod h1:bONOZa4Ep3+OFpyJ45tL157qQCK1vPAhOTN53VnMmM8=
+github.com/blugnu/test v0.9.0 h1:My76XZeA0In48igzHSeOfwBxfgvBkwDxV3y7DfU7jSk=
+github.com/blugnu/test v0.9.0/go.mod h1:7DcohgPcKb2RAKAwR4UFM1lDAWkgTGk4syk60bBRCrw=
 github.com/blugnu/ulog v0.4.3 h1:pE2eHhNlBCIqO2q8U8hpzW8KLWLS13sutC6C00c1VCk=
 github.com/blugnu/ulog v0.4.3/go.mod h1:D66zXI6pIRJDmIXB+hyJU5RSsudU8y9IOSk9B58PsoE=
 github.com/buger/goterm v1.0.4 h1:Z9YvGmOih81P0FbVtEYTFF6YsSgxSUKEhf/f9bTMXbY=
